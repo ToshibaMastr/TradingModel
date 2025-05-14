@@ -116,7 +116,7 @@ def show(data, signals: list[dict] = []):
     fig.show()
 
 
-def predict(model, df, index, seq_len, pred_len):
+def predict(model, df, index, seq_len, pred_len, device):
     s_begin = index
     s_end = s_begin + seq_len
     r_end = s_end + pred_len
@@ -137,11 +137,11 @@ def predict(model, df, index, seq_len, pred_len):
     x = pd.concat([price, volume], axis=1).values
     y = pd.concat([tprice, tvolume], axis=1).values
 
-    x = torch.FloatTensor(x).unsqueeze(0).to("cuda")
-    y = torch.FloatTensor(y).unsqueeze(0).to("cuda")
+    x = torch.FloatTensor(x).unsqueeze(0).to(device)
+    y = torch.FloatTensor(y).unsqueeze(0).to(device)
 
     model.eval()
-    with torch.no_grad(), autocast("cuda"):
+    with torch.no_grad(), autocast(device):
         outputs, _ = model(x)
         loss = F.mse_loss(outputs[:, :, 0], y[:, :, 0], reduction="mean")
 
@@ -161,7 +161,7 @@ def predict(model, df, index, seq_len, pred_len):
     # output_df.index = df.index[s_end:r_end]
 
 
-def genf(model, df, index, seq_len, pred_len):
+def genf(model, df, index, seq_len, pred_len, device):
     s_begin = index
     s_end = s_begin + seq_len
 
@@ -175,10 +175,10 @@ def genf(model, df, index, seq_len, pred_len):
     volume, vmn, vmx = scale(input_seq[["volume"]])
 
     x = pd.concat([price, volume], axis=1).values
-    x = torch.FloatTensor(x).unsqueeze(0).to("cuda")
+    x = torch.FloatTensor(x).unsqueeze(0).to(device)
 
     model.eval()
-    with torch.no_grad(), autocast("cuda"):
+    with torch.no_grad(), autocast(device):
         outputs, _ = model(x)
         outputs = outputs.squeeze(0).cpu().numpy()[:20, 0]
 

@@ -8,6 +8,9 @@ from .duet.config import DUETConfig
 from .duet.model import DUETModel
 from .parseset import genf, predict, show
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using ", device)
+
 seq_len = 256
 pred_len = 48
 timerange = "5m"
@@ -21,7 +24,7 @@ config.pred_len = pred_len
 config.enc_in = 4
 config.CI = 1
 model = DUETModel(config)
-model.to("cuda")
+model.to(device)
 
 
 if checkpoint.is_file():
@@ -38,7 +41,7 @@ while 1:
     df["pred"] = np.nan
 
     index = len(df) - seq_len - pred_len - int(input("index: "))
-    pred, ls = predict(model, df, index, seq_len, pred_len)
+    pred, ls = predict(model, df, index, seq_len, pred_len, device)
     df.loc[pred.index, "pred"] = pred
 
     show(df)
@@ -111,4 +114,3 @@ del df["target"]
 del df["pred"]
 
 show(df)
-predictf

@@ -11,6 +11,9 @@ from .duet.config import DUETConfig
 from .duet.model import DUETModel
 from .parseset import predict, show
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Using ", device)
+
 symbols = [
     # "XRP",
     # "BNB",
@@ -47,9 +50,9 @@ config.pred_len = pred_len
 config.enc_in = 4
 model = DUETModel(config)
 # model = torch.compile(model)
-model.to("cuda")
+model.to(device)
 
-criterion = nn.MSELoss(reduction="none")
+criterion = nn.HuberLoss(reduction="none")
 optimizer = optim.AdamW(model.parameters(), lr=learn)
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer,
@@ -59,10 +62,10 @@ scheduler = torch.optim.lr_scheduler.OneCycleLR(
     pct_start=0.3,
     anneal_strategy="cos",
 )
-scaler = GradScaler("cuda")
+scaler = GradScaler(device)
 best_loss = float("inf")
 
-weight = torch.tensor([2.8, 0.4, 0.4, 0.4], device="cuda")
+weight = torch.tensor([2.8, 0.4, 0.4, 0.4], device=device)
 
 if checkpoint.is_file():
     cpdata = torch.load(checkpoint)
@@ -94,10 +97,10 @@ for epoch in range(epochs):
     for i, (x, y) in enumerate(batch_bar):
         optimizer.zero_grad()
 
-        x = x.to("cuda", non_blocking=True)
-        y = y.to("cuda", non_blocking=True)
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
 
-        with autocast("cuda"):
+        with autocast(device):
             outputs, _ = model(x)
             loss = criterion(outputs, y) * weight
             loss = loss.mean()
@@ -120,7 +123,7 @@ for epoch in range(epochs):
             exit()
 
     index = 1000 - seq_len - pred_len
-    pred, lts = predict(model, df, index, seq_len, pred_len)
+    pred, lts = predict(model, df, index, seq_len, pred_len, device)
     print(
         f"Epoch {epoch + 1:03d} | "
         f"Loss {max_loss:.5f}/{avg_loss:.5f}/{min_loss:.5f} | "
