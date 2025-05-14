@@ -7,8 +7,8 @@ from tqdm.auto import tqdm
 
 from .dataset import TradeDataset
 from .download import ExchangeDownloader
-from .former.config import DUETConfig
-from .former.model import DUETModel
+from .duet.config import DUETConfig
+from .duet.model import DUETModel
 from .parseset import predict, show
 
 symbols = [

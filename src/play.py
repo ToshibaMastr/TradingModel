@@ -4,8 +4,8 @@ import numpy as np
 import torch
 
 from .download import ExchangeDownloader
-from .former.config import DUETConfig
-from .former.model import DUETModel
+from .duet.config import DUETConfig
+from .duet.model import DUETModel
 from .parseset import genf, predict, show
 
 seq_len = 256
