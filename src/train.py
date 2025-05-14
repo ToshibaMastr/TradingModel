@@ -1,24 +1,34 @@
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import GradScaler, autocast, nn, optim
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
 from .dataset import TradeDataset
-from .download import ExchangeDownloader
 from .duet.config import DUETConfig
 from .duet.model import DUETModel
-from .parseset import predict, show
+
+torch.manual_seed(2003)
+np.random.seed(2003)
+random.seed(2003)
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using ", device)
 
+
+writer = SummaryWriter(log_dir="runs/duet_train")
+
+
 symbols = [
+    "ADA",
     # "XRP",
     # "BNB",
     # "SOL",
-    "ADA",
     # "MOVR",
     # "ZRX",
     # "PEOPLE",
@@ -32,16 +42,22 @@ pred_len = 48
 batch_size = 256
 epochs = 999
 learn = 3e-3
+val_size = 1000
 
 checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
 
 datasets = [
-    TradeDataset(f"data/{symbol}:USDT-{timerange}.pkl", seq_len, pred_len, 400_000)
+    TradeDataset(f"data/{symbol}:USDT-{timerange}.pkl", seq_len, pred_len)
     for symbol in symbols
 ]
 dataset = ConcatDataset(datasets)
+train_dataset, val_dataset = random_split(dataset, [len(dataset) - val_size, val_size])
+
 dataloader = DataLoader(
-    dataset, batch_size=batch_size, num_workers=12, pin_memory=True, shuffle=True
+    train_dataset, batch_size=batch_size, num_workers=12, pin_memory=True, shuffle=True
+)
+val_loader = DataLoader(
+    val_dataset, batch_size=batch_size, num_workers=12, pin_memory=True, shuffle=True
 )
 
 config = DUETConfig()
@@ -49,7 +65,6 @@ config.seq_len = seq_len
 config.pred_len = pred_len
 config.enc_in = 4
 model = DUETModel(config)
-# model = torch.compile(model)
 model.to(device)
 
 criterion = nn.HuberLoss(reduction="none")
@@ -76,11 +91,8 @@ if checkpoint.is_file():
     # best_loss = cpdata["loss"]
     print(f"Loaded {best_loss}")
 
-ed = ExchangeDownloader()
-df = ed.download("ADA/USDT:USDT", timerange, 1000)
-print(f"Test ADA/USDT:USDT {timerange} Downloaded")
 
-for epoch in range(epochs):
+for epoch in range(0, epochs):
     model.train()
     losses = []
 
@@ -110,34 +122,47 @@ for epoch in range(epochs):
         scaler.update()
         scheduler.step()
 
-        loss = loss.item()
-        losses.append(loss)
-        batch_bar.set_postfix(loss=f"{loss:.4f}")
+        losses.append(loss.item())
+        batch_bar.set_postfix(loss=f"{sum(losses) / len(losses):.4f}")
 
     avg_loss = sum(losses) / len(losses)
     min_loss = min(losses)
     max_loss = max(losses)
 
-    for loss in losses:
-        if not loss > 0:
-            exit()
+    model.eval()
+    val_losses = []
 
-    index = 1000 - seq_len - pred_len
-    pred, lts = predict(model, df, index, seq_len, pred_len, device)
+    with torch.no_grad():
+        for x, y in val_loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+
+            with autocast(device):
+                outputs, _ = model(x)
+                loss = criterion(outputs, y) * weight
+                loss = loss.mean()
+
+            val_losses.append(loss.item())
+
+    avg_val_loss = sum(val_losses) / len(val_losses)
+    min_val_loss = min(val_losses)
+    max_val_loss = max(val_losses)
+
     print(
         f"Epoch {epoch + 1:03d} | "
         f"Loss {max_loss:.5f}/{avg_loss:.5f}/{min_loss:.5f} | "
-        f"LTS {lts:.5f} | "
+        f"RLss {max_val_loss:.5f}/{avg_val_loss:.5f}/{min_val_loss:.5f} | "
         f"LR {optimizer.param_groups[0]['lr']:.6f}",
         end="",
     )
 
+    writer.add_scalar("Epoch/Loss", avg_loss, epoch)
+    writer.add_scalar("Epoch/RLss", avg_val_loss, epoch)
+    writer.add_scalar("Epoch/LR", optimizer.param_groups[0]["lr"], epoch)
+
     if avg_loss < best_loss:
         best_loss = avg_loss
         print("  *", end="")
-
-        df.loc[pred.index, "pred"] = pred
-        show(df)
     print()
 
     torch.save(

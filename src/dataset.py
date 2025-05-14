@@ -12,11 +12,8 @@ class TradeDataset(Dataset):
         path: str,
         seq_len: int,
         pred_len: int,
-        size: int = 2_000_000,
     ):
-        df = pd.read_pickle(path)[-size:]
-        # print(df.index[-1])
-        # exit()
+        df = pd.read_pickle(path)[-40_000:]
         df = df[~df.index.duplicated(keep="first")]
 
         self.df = df

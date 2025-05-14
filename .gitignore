@@ -2,6 +2,7 @@
 state/*
 data/*
 .why
+runs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
