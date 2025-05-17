@@ -2,9 +2,10 @@ from pathlib import Path
 
 import torch
 
+from duet.config import DUETConfig
+from duet.model import DUETModel
+
 from .download import ExchangeDownloader
-from .duet.config import DUETConfig
-from .duet.model import DUETModel
 from .parseset import genf, predict, show
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -21,7 +22,6 @@ config = DUETConfig()
 config.seq_len = seq_len
 config.pred_len = pred_len
 config.enc_in = 4
-config.CI = 1
 model = DUETModel(config)
 model.to(device)
 
@@ -33,19 +33,15 @@ if checkpoint.is_file():
     print(f"✅ Checkpoint loaded. Loss {best_loss}")
 
 
-df = ExchangeDownloader().download("ADA/USDT:USDT", timerange, 1000)
+df = ExchangeDownloader().download("ETH/USDT:USDT", timerange, 1000)
 
 
-# while 1:
-#     df["pred"] = np.nan
-#
-#     index = len(df) - seq_len - pred_len - int(input("index: "))
-#     pred, ls = predict(model, df, index, seq_len, pred_len, device)
-#     df.loc[pred.index, "pred"] = pred
-#
-#     show(df)
-#     print(ls)
-#
+# df["pred"] = np.nan
+# index = len(df) - seq_len - pred_len - 15
+# pred, ls = predict(model, df, index, seq_len, pred_len, device)
+# df.loc[pred.index, "pred"] = pred
+# show(df)
+# print(ls)
 # exit()
 
 signals = []

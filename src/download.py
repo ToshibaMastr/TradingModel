@@ -32,7 +32,7 @@ class ExchangeDownloader:
         return df
 
 
-# pair = "ADA/USDT:USDT"
+# pair = "ETH/USDT:USDT"
 # timeframe = "5m"
 # df = ExchangeDownloader().download(pair, timeframe, 400_000)
 # pairname = pair.split(":")[0].replace("/", ":")

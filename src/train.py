@@ -8,9 +8,10 @@ from torch.utils.data import ConcatDataset, DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
+from duet.config import DUETConfig
+from duet.model import DUETModel
+
 from .dataset import TradeDataset
-from .duet.config import DUETConfig
-from .duet.model import DUETModel
 
 torch.manual_seed(2003)
 np.random.seed(2003)
@@ -21,11 +22,11 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using ", device)
 
 
-writer = SummaryWriter(log_dir="runs/duet_train")
+writer = SummaryWriter(log_dir="runs/DUET ETH")
 
 
 symbols = [
-    "ADA",
+    "ETH",
     # "XRP",
     # "BNB",
     # "SOL",
@@ -39,8 +40,8 @@ timerange = "5m"
 seq_len = 256
 pred_len = 48
 
-batch_size = 256
-epochs = 999
+batch_size = 386
+epochs = 50
 learn = 3e-3
 val_size = 1000
 
@@ -54,10 +55,20 @@ dataset = ConcatDataset(datasets)
 train_dataset, val_dataset = random_split(dataset, [len(dataset) - val_size, val_size])
 
 dataloader = DataLoader(
-    train_dataset, batch_size=batch_size, num_workers=12, pin_memory=True, shuffle=True
+    train_dataset,
+    batch_size=batch_size,
+    num_workers=12,
+    pin_memory=True,
+    shuffle=True,
+    persistent_workers=True,
 )
 val_loader = DataLoader(
-    val_dataset, batch_size=batch_size, num_workers=12, pin_memory=True, shuffle=True
+    val_dataset,
+    batch_size=batch_size,
+    num_workers=12,
+    pin_memory=True,
+    shuffle=True,
+    persistent_workers=True,
 )
 
 config = DUETConfig()
@@ -118,6 +129,7 @@ for epoch in range(0, epochs):
             loss = loss.mean()
 
         scaler.scale(loss).backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
@@ -132,17 +144,16 @@ for epoch in range(0, epochs):
     model.eval()
     val_losses = []
 
-    with torch.no_grad():
-        for x, y in val_loader:
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
+    for x, y in val_loader:
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
 
-            with autocast(device):
-                outputs, _ = model(x)
-                loss = criterion(outputs, y) * weight
-                loss = loss.mean()
+        with autocast(device), torch.no_grad():
+            outputs, _ = model(x)
+            loss = criterion(outputs, y) * weight
+            loss = loss.mean()
 
-            val_losses.append(loss.item())
+        val_losses.append(loss.item())
 
     avg_val_loss = sum(val_losses) / len(val_losses)
     min_val_loss = min(val_losses)
@@ -158,7 +169,6 @@ for epoch in range(0, epochs):
 
     writer.add_scalar("Epoch/Loss", avg_loss, epoch)
     writer.add_scalar("Epoch/RLss", avg_val_loss, epoch)
-    writer.add_scalar("Epoch/LR", optimizer.param_groups[0]["lr"], epoch)
 
     if avg_loss < best_loss:
         best_loss = avg_loss
@@ -175,3 +185,5 @@ for epoch in range(0, epochs):
         },
         str(checkpoint),
     )
+
+writer.close()
