@@ -2,8 +2,7 @@ from pathlib import Path
 
 import torch
 
-from duet.config import DUETConfig
-from duet.model import DUETModel
+from autoformer.model import Autoformer
 
 from .download import ExchangeDownloader
 from .parseset import genf, predict, show
@@ -11,18 +10,15 @@ from .parseset import genf, predict, show
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using ", device)
 
-seq_len = 256
-pred_len = 48
+seq_len = 192
+label_len = 48
+pred_len = 24
 timerange = "5m"
 
 checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
 
 
-config = DUETConfig()
-config.seq_len = seq_len
-config.pred_len = pred_len
-config.enc_in = 4
-model = DUETModel(config)
+model = Autoformer(4, 4, 1)
 model.to(device)
 
 
@@ -34,14 +30,15 @@ if checkpoint.is_file():
 
 
 df = ExchangeDownloader().download("ETH/USDT:USDT", timerange, 1000)
+df["target"] = df["close"].rolling(window=5, min_periods=1).mean()
 
-
-# df["pred"] = np.nan
-# index = len(df) - seq_len - pred_len - 15
-# pred, ls = predict(model, df, index, seq_len, pred_len, device)
-# df.loc[pred.index, "pred"] = pred
-# show(df)
-# print(ls)
+# while 1:
+#     df["pred"] = np.nan
+#     index = len(df) - seq_len - pred_len - int(input(": "))
+#     pred, ls = predict(model, df, index, seq_len, label_len, pred_len, device)
+#     df.loc[pred.index, "pred"] = pred
+#     show(df)
+#     print(ls.item())
 # exit()
 
 signals = []
@@ -50,8 +47,8 @@ cp = False
 ms = False
 mx = 0
 index = 0
-for i in range(len(df) - seq_len):
-    signal = genf(model, df, index, seq_len, pred_len, device)
+for i in range(len(df) - seq_len - 100):
+    signal = genf(model, df, index, seq_len, label_len, pred_len, device)
     current = df.index[index + seq_len - 1]
     df.loc[current, "signal"] = signal
 

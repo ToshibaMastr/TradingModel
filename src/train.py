@@ -8,8 +8,7 @@ from torch.utils.data import ConcatDataset, DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from duet.config import DUETConfig
-from duet.model import DUETModel
+from autoformer.model import Autoformer
 
 from .dataset import TradeDataset
 
@@ -22,11 +21,12 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using ", device)
 
 
-writer = SummaryWriter(log_dir="runs/DUET ETH")
+writer = SummaryWriter(log_dir="runs/Autoformer")
 
 
 symbols = [
     "ETH",
+    # "ADA",
     # "XRP",
     # "BNB",
     # "SOL",
@@ -37,8 +37,9 @@ symbols = [
 ]
 timerange = "5m"
 
-seq_len = 256
-pred_len = 48
+seq_len = 192
+label_len = 48
+pred_len = 24
 
 batch_size = 386
 epochs = 50
@@ -48,7 +49,7 @@ val_size = 1000
 checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
 
 datasets = [
-    TradeDataset(f"data/{symbol}:USDT-{timerange}.pkl", seq_len, pred_len)
+    TradeDataset(f"data/{symbol}:USDT-{timerange}.pkl", seq_len, label_len, pred_len)
     for symbol in symbols
 ]
 dataset = ConcatDataset(datasets)
@@ -71,11 +72,9 @@ val_loader = DataLoader(
     persistent_workers=True,
 )
 
-config = DUETConfig()
-config.seq_len = seq_len
-config.pred_len = pred_len
-config.enc_in = 4
-model = DUETModel(config)
+model = Autoformer(4, 4, 1)
+# model.compile()
+# model = torch.compile(model)
 model.to(device)
 
 criterion = nn.HuberLoss(reduction="none")
@@ -91,7 +90,6 @@ scheduler = torch.optim.lr_scheduler.OneCycleLR(
 scaler = GradScaler(device)
 best_loss = float("inf")
 
-weight = torch.tensor([2.8, 0.4, 0.4, 0.4], device=device)
 
 if checkpoint.is_file():
     cpdata = torch.load(checkpoint)
@@ -117,15 +115,25 @@ for epoch in range(0, epochs):
     )
     batch_bar.set_postfix(loss=f"{0:.4f}")
 
-    for i, (x, y) in enumerate(batch_bar):
+    for x, y, x_mark, y_mark in batch_bar:
         optimizer.zero_grad()
 
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
+        x_mark = x_mark.to(device, non_blocking=True)
+        y_mark = y_mark.to(device, non_blocking=True)
+
+        dec_inp = torch.zeros_like(y[:, -pred_len:, :]).float()
+        dec_inp = torch.cat([y[:, :label_len, :], dec_inp], dim=1).float().to(y.device)
+
         with autocast(device):
-            outputs, _ = model(x)
-            loss = criterion(outputs, y) * weight
+            outputs, _ = model(x, x_mark, dec_inp, y_mark)
+
+            outputs = outputs[:, -pred_len:, :]
+            y = y[:, -pred_len:, :].to(outputs.device)
+
+            loss = criterion(outputs, y)
             loss = loss.mean()
 
         scaler.scale(loss).backward()
@@ -141,16 +149,31 @@ for epoch in range(0, epochs):
     min_loss = min(losses)
     max_loss = max(losses)
 
+    for loss in losses:
+        if not loss > 0:
+            exit()
+
     model.eval()
     val_losses = []
 
-    for x, y in val_loader:
+    for x, y, x_mark, y_mark in val_loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
+        x_mark = x_mark.to(device, non_blocking=True)
+        y_mark = y_mark.to(device, non_blocking=True)
+
+        dec_inp = torch.zeros_like(y[:, -pred_len:, :]).float()
+        dec_inp = torch.cat([y[:, :label_len, :], dec_inp], dim=1).float().to(y.device)
+
         with autocast(device), torch.no_grad():
-            outputs, _ = model(x)
-            loss = criterion(outputs, y) * weight
+            outputs, _ = model(x, x_mark, dec_inp, y_mark)
+
+            f_dim = -1
+            outputs = outputs[:, -pred_len:, f_dim:]
+            y = y[:, -pred_len:, f_dim:].to(outputs.device)
+
+            loss = criterion(outputs, y)
             loss = loss.mean()
 
         val_losses.append(loss.item())

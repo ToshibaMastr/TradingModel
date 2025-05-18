@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from plotly.subplots import make_subplots
 from torch import autocast
 
+from .dataset import TradeDataset
 from .utils import scale, unscale
 
 
@@ -116,17 +117,19 @@ def show(data, signals: list[dict] = []):
     fig.show()
 
 
-def predict(model, df, index, seq_len, pred_len, device):
+def predict(model, data, index, seq_len, label_len, pred_len, device):
     s_begin = index
     s_end = s_begin + seq_len
+    r_begin = s_end - label_len
     r_end = s_end + pred_len
 
-    if s_end > len(df):
+    if r_end > len(data):
         raise IndexError("DataFrame")
 
-    data = df[["close", "high", "low", "volume"]]
+    time_feats = TradeDataset._gen_time_features(data.index)
+
     input_seq = data[s_begin:s_end]
-    target_seq = data[s_end:r_end]
+    target_seq = data[r_begin:r_end]
 
     price, pmn, pmx = scale(input_seq[["close", "high", "low"]])
     volume, vmn, vmx = scale(input_seq[["volume"]])
@@ -137,49 +140,76 @@ def predict(model, df, index, seq_len, pred_len, device):
     x = pd.concat([price, volume], axis=1).values
     y = pd.concat([tprice, tvolume], axis=1).values
 
+    x_mark = time_feats[s_begin:s_end]
+    y_mark = time_feats[r_begin:r_end]
+
     x = torch.FloatTensor(x).unsqueeze(0).to(device)
     y = torch.FloatTensor(y).unsqueeze(0).to(device)
 
+    x_mark = torch.FloatTensor(x_mark).unsqueeze(0).to(device)
+    y_mark = torch.FloatTensor(y_mark).unsqueeze(0).to(device)
+
+    dec_inp = torch.zeros_like(y[:, -pred_len:, :]).float()
+    dec_inp = torch.cat([y[:, :label_len, :], dec_inp], dim=1).float().to(y.device)
+
     model.eval()
     with torch.no_grad(), autocast(device):
-        outputs, _ = model(x)
-        loss = F.mse_loss(outputs[:, :, 0], y[:, :, 0], reduction="mean")
+        outputs, _ = model(x, x_mark, dec_inp, y_mark)
 
-        outputs = outputs.squeeze(0).cpu().numpy()
+        outputs = outputs[:, -pred_len:, :]
+        y = y[:, -pred_len:, :].to(outputs.device)
 
-    pred_close = unscale(outputs[:, 1], pmn, pmx)
+        loss = F.mse_loss(outputs, y, reduction="mean")
+
+        outputs = outputs[0, :, 0].cpu().numpy()
+
+    pred_close = unscale(outputs, pmn, pmx)
     pred_index = df.index[s_end:r_end]
     return pd.Series(pred_close, index=pred_index, name="pred"), loss
 
-    # columns = ["close", "high", "low", "volume"]
-    # output_df = pd.DataFrame(outputs, columns=columns)
 
-    # output_df[["close", "high", "low"]] = unscale(
-    #     output_df[["close", "high", "low"]], pmn, pmx
-    # )
-    # output_df[["volume"]] = unscale(output_df[["volume"]], vmn, vmx)
-    # output_df.index = df.index[s_end:r_end]
-
-
-def genf(model, df, index, seq_len, pred_len, device):
+def genf(model, data, index, seq_len, label_len, pred_len, device):
     s_begin = index
     s_end = s_begin + seq_len
+    r_begin = s_end - label_len
+    r_end = s_end + pred_len
 
-    if s_end > len(df):
+    if r_end > len(data):
         raise IndexError("DataFrame")
 
-    data = df[["close", "high", "low", "volume"]]
+    time_feats = TradeDataset._gen_time_features(data.index)
+
     input_seq = data[s_begin:s_end]
+    target_seq = data[r_begin:r_end]
 
     price, pmn, pmx = scale(input_seq[["close", "high", "low"]])
     volume, vmn, vmx = scale(input_seq[["volume"]])
 
+    tprice, _, _ = scale(target_seq[["close", "high", "low"]], pmn, pmx)
+    tvolume, _, _ = scale(target_seq[["volume"]], vmn, vmx)
+
     x = pd.concat([price, volume], axis=1).values
+    y = pd.concat([tprice, tvolume], axis=1).values
+
+    x_mark = time_feats[s_begin:s_end]
+    y_mark = time_feats[r_begin:r_end]
+
     x = torch.FloatTensor(x).unsqueeze(0).to(device)
+    y = torch.FloatTensor(y).unsqueeze(0).to(device)
+
+    x_mark = torch.FloatTensor(x_mark).unsqueeze(0).to(device)
+    y_mark = torch.FloatTensor(y_mark).unsqueeze(0).to(device)
+
+    dec_inp = torch.zeros_like(y[:, -pred_len:, :]).float()
+    dec_inp = torch.cat([y[:, :label_len, :], dec_inp], dim=1).float().to(y.device)
 
     model.eval()
     with torch.no_grad(), autocast(device):
-        outputs, _ = model(x)
-        outputs = outputs.squeeze(0).cpu().numpy()[:20, 0]
+        outputs, _ = model(x, x_mark, dec_inp, y_mark)
+
+        outputs = outputs[:, -pred_len:, :]
+        y = y[:, -pred_len:, :].to(outputs.device)
+
+        outputs = outputs[0, :, 0].cpu().numpy()
 
     return sum(outputs - outputs[0])
