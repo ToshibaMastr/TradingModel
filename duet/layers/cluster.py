@@ -5,7 +5,7 @@ import torch.nn as nn
 from einops import rearrange
 from torch.distributions.normal import Normal
 
-from .enc_dec import series_decomp
+from .decomp import series_decomp
 from .revin import RevIN
 
 ltime = datetime.now()
@@ -60,7 +60,7 @@ class GatingNetwork(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(input_size, hidden_size, bias=False),
             nn.ReLU(),
-            nn.Linear(input_size, num_experts, bias=False),
+            nn.Linear(hidden_size, num_experts, bias=False),
         )
 
     def forward(self, x):

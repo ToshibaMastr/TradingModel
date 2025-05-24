@@ -2,11 +2,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import torch
-import torch.nn.functional as F
 from plotly.subplots import make_subplots
 from torch import autocast
 
-from .dataset import TradeDataset
 from .utils import scale, unscale
 
 
@@ -117,99 +115,181 @@ def show(data, signals: list[dict] = []):
     fig.show()
 
 
-def predict(model, data, index, seq_len, label_len, pred_len, device):
-    s_begin = index
-    s_end = s_begin + seq_len
-    r_begin = s_end - label_len
-    r_end = s_end + pred_len
+def predict(model, data, index, seq_len, pred_len, window_size=None, device="cuda"):
+    if window_size is None:
+        window_size = pred_len
+    elif window_size > pred_len:
+        raise IndexError("window")
 
-    if r_end > len(data):
+    s_begin = index - seq_len
+    s_end = index
+    r_end = s_end + window_size
+
+    if s_end > len(data):
         raise IndexError("DataFrame")
 
-    time_feats = TradeDataset._gen_time_features(data.index)
-
+    data = data[["close", "high", "low", "volume"]]
     input_seq = data[s_begin:s_end]
-    target_seq = data[r_begin:r_end]
 
     price, pmn, pmx = scale(input_seq[["close", "high", "low"]])
     volume, vmn, vmx = scale(input_seq[["volume"]])
 
-    tprice, _, _ = scale(target_seq[["close", "high", "low"]], pmn, pmx)
-    tvolume, _, _ = scale(target_seq[["volume"]], vmn, vmx)
-
     x = pd.concat([price, volume], axis=1).values
-    y = pd.concat([tprice, tvolume], axis=1).values
-
-    x_mark = time_feats[s_begin:s_end]
-    y_mark = time_feats[r_begin:r_end]
-
     x = torch.FloatTensor(x).unsqueeze(0).to(device)
-    y = torch.FloatTensor(y).unsqueeze(0).to(device)
-
-    x_mark = torch.FloatTensor(x_mark).unsqueeze(0).to(device)
-    y_mark = torch.FloatTensor(y_mark).unsqueeze(0).to(device)
-
-    dec_inp = torch.zeros_like(y[:, -pred_len:, :]).float()
-    dec_inp = torch.cat([y[:, :label_len, :], dec_inp], dim=1).float().to(y.device)
 
     model.eval()
     with torch.no_grad(), autocast(device):
-        outputs, _ = model(x, x_mark, dec_inp, y_mark)
+        outputs, _ = model(x)
+        outputs = outputs.squeeze(0).cpu().numpy()
 
-        outputs = outputs[:, -pred_len:, :]
-        y = y[:, -pred_len:, :].to(outputs.device)
+    pred_index = data.index[s_end:r_end]
+    price = unscale(outputs[:window_size, 0:3], pmn, pmx)
+    volume = unscale(outputs[:window_size, 3], vmn, vmx).reshape(-1, 1)
 
-        loss = F.mse_loss(outputs, y, reduction="mean")
+    result = pd.DataFrame(
+        data=np.hstack([price, volume]),
+        index=pred_index,
+        columns=["close", "high", "low", "volume"],
+    )
 
-        outputs = outputs[0, :, 0].cpu().numpy()
-
-    pred_close = unscale(outputs, pmn, pmx)
-    pred_index = df.index[s_end:r_end]
-    return pd.Series(pred_close, index=pred_index, name="pred"), loss
+    return result
 
 
-def genf(model, data, index, seq_len, label_len, pred_len, device):
-    s_begin = index
-    s_end = s_begin + seq_len
-    r_begin = s_end - label_len
-    r_end = s_end + pred_len
+def genf(
+    model,
+    data,
+    start_index,
+    end_index,
+    seq_len,
+    pred_len,
+    batch_size=32,
+    window_size=12,
+    device="cuda",
+):
+    data = data[["close", "high", "low", "volume"]]
 
-    if r_end > len(data):
+    num_samples = end_index - start_index + 1
+    batch_inputs = torch.empty((num_samples, seq_len, 4), device=device)
+    min_max_values = []
+
+    for i, index in enumerate(range(start_index, end_index + 1)):
+        s_begin = index - seq_len
+        s_end = index
+
+        if s_begin < 0 or s_end > len(data):
+            raise IndexError(f"{index} [- {seq_len}]")
+
+        input_seq = data.iloc[s_begin:s_end]
+
+        price, pmn, pmx = scale(input_seq[["close", "high", "low"]])
+        volume, _, _ = scale(input_seq[["volume"]])
+
+        min_max_values.append((pmn, pmx))
+
+        x = pd.concat([price, volume], axis=1).values
+        batch_inputs[i, :, :] = torch.from_numpy(x).to(device, non_blocking=True)
+
+        if i % 100 == 0:
+            print(i)
+
+    predictions = torch.empty((num_samples, pred_len, 4), device=device)
+    model.eval()
+    with torch.no_grad(), autocast(device):
+        for i in range(0, batch_inputs.size(0), batch_size):
+            batch_x = batch_inputs[i : i + batch_size]
+            outputs, _ = model(batch_x)
+            predictions[i : i + outputs.size(0)] = outputs
+
+            if i % 100 == 0:
+                print(i)
+
+    index = 0
+    deltas = torch.empty(num_samples, device=device)
+    for pred, (pmn, pmx) in zip(predictions, min_max_values):
+        pred_close = unscale(pred[-window_size:, 0], pmn, pmx)
+        pred_high = unscale(pred[-window_size:, 1], pmn, pmx)
+        pred_low = unscale(pred[-window_size:, 2], pmn, pmx)
+
+        close_delta = pred_close / pred_close[0] - 1
+
+        deltas[index] = close_delta.mean()
+        index += 1
+
+        if index % 100 == 0:
+            print(index)
+
+    alpha = 0.4
+    raw_signal = deltas.cpu().numpy() * 10
+    raw_signal = np.sign(raw_signal) * (np.abs(raw_signal) ** alpha)
+    return raw_signal
+
+
+def gena(model, data, index, seq_len, device):
+    s_begin = index - seq_len
+    s_end = index
+
+    if s_end > len(data):
         raise IndexError("DataFrame")
 
-    time_feats = TradeDataset._gen_time_features(data.index)
-
+    data = data[["close", "signal", "volume", "action"]]
     input_seq = data[s_begin:s_end]
-    target_seq = data[r_begin:r_end]
 
-    price, pmn, pmx = scale(input_seq[["close", "high", "low"]])
-    volume, vmn, vmx = scale(input_seq[["volume"]])
+    price, _, _ = scale(input_seq[["close"]])
+    volume, _, _ = scale(input_seq[["volume"]])
+    signal = input_seq[["signal"]]
 
-    tprice, _, _ = scale(target_seq[["close", "high", "low"]], pmn, pmx)
-    tvolume, _, _ = scale(target_seq[["volume"]], vmn, vmx)
+    frame = pd.concat([price, signal, volume], axis=1).values
+    x = input_seq["action"].values
 
-    x = pd.concat([price, volume], axis=1).values
-    y = pd.concat([tprice, tvolume], axis=1).values
-
-    x_mark = time_feats[s_begin:s_end]
-    y_mark = time_feats[r_begin:r_end]
-
-    x = torch.FloatTensor(x).unsqueeze(0).to(device)
-    y = torch.FloatTensor(y).unsqueeze(0).to(device)
-
-    x_mark = torch.FloatTensor(x_mark).unsqueeze(0).to(device)
-    y_mark = torch.FloatTensor(y_mark).unsqueeze(0).to(device)
-
-    dec_inp = torch.zeros_like(y[:, -pred_len:, :]).float()
-    dec_inp = torch.cat([y[:, :label_len, :], dec_inp], dim=1).float().to(y.device)
+    x = torch.LongTensor(x).unsqueeze(0).to(device)
+    frame = torch.FloatTensor(frame).unsqueeze(0).to(device)
 
     model.eval()
     with torch.no_grad(), autocast(device):
-        outputs, _ = model(x, x_mark, dec_inp, y_mark)
+        logits, _ = model(x, frame)
 
-        outputs = outputs[:, -pred_len:, :]
-        y = y[:, -pred_len:, :].to(outputs.device)
+    return torch.argmax(logits, dim=-1).cpu().numpy()[0][-1]
 
-        outputs = outputs[0, :, 0].cpu().numpy()
 
-    return sum(outputs - outputs[0])
+def autogena(df, start, end, seq_len):
+    state = "min"
+    index = start
+
+    timestamp = df.index[0]
+
+    while index + seq_len <= end:
+        frame = df.iloc[index : index + seq_len]["close"]
+        if state == "min":
+            timestamp = frame.idxmin()
+            df.loc[timestamp, "action"] = 1
+            state = "max"
+        else:
+            timestamp = frame.idxmax()
+            df.loc[timestamp, "action"] = 2
+            state = "min"
+
+        index = df.index.get_loc(timestamp) + 1
+
+
+# def autogena(df, start, end, seq_len):
+#     state = "min"
+#     index = start
+#
+#     timestamp = df.index[0]
+#
+#     while index + seq_len <= end:
+#         frame = df.iloc[index : index + seq_len]["close"]
+#         if state == "min":
+#             lstamp = timestamp
+#             timestamp = frame.idxmin()
+#             df.loc[lstamp:timestamp, "action"] = 0
+#             state = "max"
+#         else:
+#             lstamp = timestamp
+#             timestamp = frame.idxmax()
+#             signal = df.loc[timestamp, "close"] / df.loc[lstamp, "close"] - 1
+#             if signal > 0.01:
+#                 df.loc[lstamp:timestamp, "action"] = signal
+#             state = "min"
+#
+#         index = df.index.get_loc(timestamp) + 1

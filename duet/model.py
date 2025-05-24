@@ -2,14 +2,10 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+from .layers.attention import AttentionLayer, FullAttention
 from .layers.cluster import MixtureOfExperts
-from .utils.masked_attention import (
-    AttentionLayer,
-    Encoder,
-    EncoderLayer,
-    FullAttention,
-    MahalanobisMask,
-)
+from .layers.encoder import Encoder, EncoderLayer
+from .layers.masking import MahalanobisMask
 
 
 class DUETModel(nn.Module):
@@ -18,7 +14,7 @@ class DUETModel(nn.Module):
         self.cluster = MixtureOfExperts(config)
         self.num_variables = config.enc_in
         self.mask_generator = MahalanobisMask(config.seq_len)
-        self.channel_transformer = Encoder(
+        self.channels = Encoder(
             [
                 EncoderLayer(
                     AttentionLayer(
@@ -56,7 +52,7 @@ class DUETModel(nn.Module):
         if N > 1:
             input = input.permute(0, 2, 1)
             mask = self.mask_generator(input)
-            features, attention = self.channel_transformer(features, mask)
+            features, attention = self.channels(features, mask)
 
         output = self.linear_head(features)
         output = output.permute(0, 2, 1)

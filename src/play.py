@@ -1,36 +1,148 @@
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import torch
 
-from autoformer.model import Autoformer
+from duet.config import DUETConfig
+from duet.model import DUETModel
+from trader.model import TradeModel
 
 from .download import ExchangeDownloader
-from .parseset import genf, predict, show
+from .parseset import autogena, genf, predict, show
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using ", device)
 
-seq_len = 192
-label_len = 48
-pred_len = 24
+if device == "cuda":
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+
+
+seq_len = 512
+pred_len = 12
 timerange = "5m"
 
+config = DUETConfig()
+config.seq_len = seq_len
+config.pred_len = pred_len
+config.enc_in = 4
+model = DUETModel(config).to(device)
+
+rmodel = TradeModel(3, 3, 64).to(device)
+
 checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
-
-
-model = Autoformer(4, 4, 1)
-model.to(device)
-
-
 if checkpoint.is_file():
     cpdata = torch.load(checkpoint)
     model.load_state_dict(cpdata["model"])
-    best_loss = cpdata["loss"]
-    print(f"✅ Checkpoint loaded. Loss {best_loss}")
+    print(f"✅ Checkpoint m loaded. Loss {cpdata['loss']:.6f}")
+
+checkpoint_path = Path("state") / "TM_S32.pth"
+if checkpoint_path.is_file():
+    cpdata = torch.load(checkpoint_path, map_location=device)
+    rmodel.load_state_dict(cpdata["model"])
+    print(f"✅ Checkpoint r loaded. Loss {cpdata['loss']:.6f}")
 
 
-df = ExchangeDownloader().download("ETH/USDT:USDT", timerange, 1000)
-df["target"] = df["close"].rolling(window=5, min_periods=1).mean()
+df = pd.read_pickle("data/ETH:USDT-5m.pkl")
+# df = ExchangeDownloader().download("ETH/USDT:USDT", timerange, 1000)
+df["signal"] = 0.0
+df["pred"] = np.nan
+
+start = seq_len
+end = len(df) - 1
+
+signal = genf(model, df, start, end, seq_len, pred_len, window_size=6)
+df.iloc[start : end + 1, df.columns.get_loc("signal")] = signal
+
+df.to_pickle("eth-signal.pkl")
+
+show(df[-1000:])
+
+exit()
+
+for i in [6, 12, 16, 20, 24]:  # [6, 12, 16, 20, 24]
+    signal = genf(model, df, start, end, seq_len, pred_len, window_size=i)
+    df.iloc[start : end + 1, df.columns.get_loc("signal")] = signal
+    show(df[start:end])
+
+exit()
+
+# for i in range(start, end - pred_len, window + 1):
+#     pred = predict(model, df, i, seq_len, pred_len, window)
+#     df.iloc[i : i + window, df.columns.get_loc("pred")] = pred["close"]
+#     print(i)
+
+show(df[start:end])
+exit()
+
+# df = ExchangeDownloader().download("ETH/USDT:USDT", timerange, 5000)
+#
+# df["signal"] = 0.0
+# start = seq_len
+# end = len(df) - 1
+# signal = genf(model, df, start, end, seq_len, pred_len)
+# df.iloc[start : end + 1, df.columns.get_loc("signal")] = signal
+#
+#
+# # df = pd.read_pickle("eth-signal.pkl")
+# df["action"] = 0
+# df["profit"] = 0
+#
+# pred = len(df) - seq_len
+# signals = []
+# autogena(df, 0, len(df) - pred, 64)
+#
+# profit = 0
+# position = None
+# quantity = 1
+#
+# for i in range(len(df) - pred, len(df) - 1):
+#     current = df.index[i]
+#     signal = gena(rmodel, df, i, seq_len, device)
+#     df.loc[current, "action"] = signal
+#
+#     if signal == 1 and position is None:
+#         position = df.loc[current, "close"]
+#         signals.append({"time": current, "s": signal, "op": "buy"})
+#
+#     elif signal == 2 and position is not None:
+#         sell_price = df.loc[current, "close"]
+#         trade_profit = (sell_price - position) * quantity
+#         profit += trade_profit
+#         position = None
+#
+#         signals.append({"time": current, "s": signal, "op": "sell"})
+#
+#     df.loc[current, "profit"] = profit
+#
+#     print(current, profit)
+#
+# df = df[-pred:]
+#
+# show(df, signals)
+# exit()
+
+df = pd.read_pickle("eth-signal.pkl")
+df["action"] = 0
+seq_len = 64
+
+
+autogena(df, 0, len(df), 32)
+
+print()
+
+print(
+    (df["action"] == 0).sum(),
+    "/",
+    (df["action"] == 1).sum(),
+    "/",
+    (df["action"] == 2).sum(),
+)
+
+df.to_pickle("eth-signal-bhs.pkl")
+
+exit()
 
 # while 1:
 #     df["pred"] = np.nan
@@ -47,10 +159,13 @@ cp = False
 ms = False
 mx = 0
 index = 0
-for i in range(len(df) - seq_len - 100):
-    signal = genf(model, df, index, seq_len, label_len, pred_len, device)
+for i in range(len(df) - seq_len):
+    signal = genf(model, df, index, seq_len, pred_len, device)
     current = df.index[index + seq_len - 1]
     df.loc[current, "signal"] = signal
+
+    print(df[current])
+    exit()
 
     if signal > mx:
         mx = signal
@@ -106,3 +221,4 @@ del df["target"]
 del df["pred"]
 
 show(df)
+df = ExchangeDownloader().download("ETH/USDT:USDT", timerange, 1000)

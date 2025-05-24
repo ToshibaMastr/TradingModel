@@ -1,8 +1,10 @@
 # Viru
 state/*
 data/*
-.why
 runs/
+.why
+
+eth-signal.pkl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

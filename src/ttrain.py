@@ -4,59 +4,39 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import GradScaler, autocast, nn, optim
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
-from duet.config import DUETConfig
-from duet.model import DUETModel
+from trader.model import TradeModel
 
-from .dataset import TradeDataset
+from .tdataset import TimeSeries
 from .utils import seq_split
 
 torch.manual_seed(2003)
 np.random.seed(2003)
 random.seed(2003)
 
-
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print("Using ", device)
+print("Using device:", device)
 
 if device == "cuda":
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
 
-writer = SummaryWriter(log_dir="runs/DUET")
+
+seq_len = 256
+hidden = 64
+
+batch_size = 128
+epochs = 50
+learn = 3e-4
+val_size = 5000
 
 
-symbols = [
-    "ETH",
-    # "ADA",
-    # "XRP",
-    # "BNB",
-    # "SOL",
-    # "MOVR",
-    # "ZRX",
-    # "PEOPLE",
-    # "WLD",
-]
-timerange = "5m"
+writer = SummaryWriter(log_dir="runs/TradeModel")
 
-seq_len = 512
-pred_len = 12
-
-batch_size = 386
-epochs = 25
-learn = 3e-3
-val_size = 10000
-
-checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
-
-datasets = [
-    TradeDataset(f"data/{symbol}:USDT-{timerange}.pkl", seq_len, pred_len)
-    for symbol in symbols
-]
-dataset = ConcatDataset(datasets)
+dataset = TimeSeries("eth-signal.pkl", seq_len)
 train_dataset, val_dataset = seq_split(dataset, [len(dataset) - val_size, val_size])
 dataloader = DataLoader(
     train_dataset,
@@ -75,14 +55,10 @@ val_loader = DataLoader(
     persistent_workers=True,
 )
 
-config = DUETConfig()
-config.seq_len = seq_len
-config.pred_len = pred_len
-config.enc_in = 4
-model = DUETModel(config).to(device)
+model = TradeModel(3, 3, hidden).to(device)
 
-criterion = nn.MSELoss(reduction="none")
-optimizer = optim.AdamW(model.parameters(), lr=learn)
+criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.1, 1.0, 1.0], device=device))
+optimizer = optim.Adam(model.parameters(), lr=learn)
 scheduler = optim.lr_scheduler.OneCycleLR(
     optimizer,
     max_lr=learn,
@@ -94,61 +70,56 @@ scheduler = optim.lr_scheduler.OneCycleLR(
 scaler = GradScaler(device)
 best_loss = float("inf")
 
-weight = torch.tensor([2.8, 0.4, 0.4, 0.4], device=device)
-
-if checkpoint.is_file():
-    cpdata = torch.load(checkpoint, map_location=device)
+checkpoint_path = Path("state") / "TM_S32.pth"
+if checkpoint_path.is_file():
+    cpdata = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(cpdata["model"])
     optimizer.load_state_dict(cpdata["optimizer"])
     # scheduler.load_state_dict(cpdata["scheduler"])
     scaler.load_state_dict(cpdata["scaler"])
     # best_loss = cpdata["loss"]
-    print(f"Loaded {cpdata['loss']}")
+    print(f"Loaded {cpdata['loss']:.6f}")
 
 
 @torch.no_grad()
 def evaluate(model, loader):
     model.eval()
     losses = []
-    for x, y in loader:
+    for frame, x, y in loader:
+        frame = frame.to(device, non_blocking=True)
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         with autocast(device):
-            outputs, _ = model(x)
-            loss = criterion(outputs[:, :, 0], y[:, :, 0])
-            loss = loss.mean()
+            logits, _ = model(x, frame)
+            loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
         losses.append(loss.item())
     return losses
 
 
-for epoch in range(0, epochs):
+for epoch in range(epochs):
     model.train()
     losses = []
 
-    batch_bar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}", unit="batch")
-    for x, y in batch_bar:
+    pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}", unit="batch")
+    for frame, x, y in pbar:
         optimizer.zero_grad()
 
+        frame = frame.to(device, non_blocking=True)
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
         with autocast(device):
-            outputs, _ = model(x)
-            loss = criterion(outputs, y) * weight
-            loss = loss.mean()
+            logits, hc = model(x, frame)
+            loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
 
         scaler.scale(loss).backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
 
         losses.append(loss.item())
-        batch_bar.set_postfix(loss=f"{sum(losses) / len(losses):.4f}")
-
-    for loss in losses:
-        if not loss > 0:
-            exit()
+        pbar.set_postfix(loss=f"{sum(losses) / len(losses):.6f}")
 
     eval_losses = evaluate(model, val_loader)
 
@@ -158,8 +129,9 @@ for epoch in range(0, epochs):
     writer.add_scalar("Epoch/Loss", avgloss, epoch)
     writer.add_scalar("Epoch/RLss", avgrlss, epoch)
 
+    # print(torch.argmax(logits, dim=-1)[0].abs())
     print(
-        f"Epoch {epoch + 1:03d} | Loss {avgloss:.5f} | RLss {avgrlss:.5f}",
+        f"Epoch {epoch + 1:03d} | Loss {avgloss:.6f} | RLss: {avgrlss:.6f}",
         end="",
     )
 
@@ -176,7 +148,7 @@ for epoch in range(0, epochs):
             "scaler": scaler.state_dict(),
             "loss": best_loss,
         },
-        str(checkpoint),
+        str(checkpoint_path),
     )
 
 writer.close()
