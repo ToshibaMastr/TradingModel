@@ -5,12 +5,12 @@ class DUETConfig:
     enc_in: int = 1
     dec_in: int = 1
     c_out: int = 1
+
     d_model: int = 512
     d_ff: int = 2048
 
     n_heads: int = 8
     e_layers: int = 2
-    d_layers: int = 1
     factor: int = 1
 
     activation: str = "gelu"
