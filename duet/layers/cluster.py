@@ -1,5 +1,3 @@
-from datetime import datetime
-
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -7,16 +5,6 @@ from torch.distributions.normal import Normal
 
 from .decomp import series_decomp
 from .revin import RevIN
-
-ltime = datetime.now()
-
-
-def pinn(text):
-    global ltime
-
-    vtime = datetime.now()
-    print(text, (vtime - ltime).total_seconds())
-    ltime = vtime
 
 
 class SharedExtractor(nn.Module):
@@ -64,8 +52,8 @@ class GatingNetwork(nn.Module):
         )
 
     def forward(self, x):
-        mean = torch.mean(x, dim=-1)
-        out = self.mlp(mean)
+        x = x.squeeze(-1)
+        out = self.mlp(x)
         return out
 
 
@@ -161,11 +149,12 @@ class MixtureOfExperts(nn.Module):
             raw_noise_stddev = self.noise(x)
             noise_stddev = self.softplus(raw_noise_stddev) + epsilon
             noise = torch.randn_like(clean_logits)
-            noisy_logits = clean_logits + (noise * noise_stddev)
+            noisy_logits = clean_logits + noise * noise_stddev
             logits = noisy_logits @ self.weight
         else:
             logits = clean_logits
         logits = self.softmax(logits)
+
         # calculate topk + 1 that will be needed for the noisy gates
         top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
 

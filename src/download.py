@@ -32,8 +32,9 @@ class ExchangeDownloader:
         return df
 
 
-# pair = "ETH/USDT:USDT"
-# timeframe = "5m"
-# df = ExchangeDownloader().download(pair, timeframe, 400_000)
-# pairname = pair.split(":")[0].replace("/", ":")
-# df.to_pickle(f"data/{pairname}-{timeframe}.pkl")
+if __name__ == "__main__":
+    pair = "XRP/USDT:USDT"
+    timeframe = "5m"
+    df = ExchangeDownloader().download(pair, timeframe, 4_000_000)
+    pairname = pair.split(":")[0].replace("/", ":")
+    df.to_pickle(f"data/{pairname}-{timeframe}.pkl")

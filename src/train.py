@@ -30,10 +30,11 @@ writer = SummaryWriter(log_dir="runs/DUET")
 
 
 symbols = [
-    "ETH",
+    # "ETH",
     # "ADA",
     # "XRP",
     # "BNB",
+    "BTC",
     # "SOL",
     # "MOVR",
     # "ZRX",
@@ -42,13 +43,13 @@ symbols = [
 ]
 timerange = "5m"
 
-seq_len = 512
-pred_len = 12
+seq_len = 1024
+pred_len = 128
 
 batch_size = 386
 epochs = 25
 learn = 3e-3
-val_size = 10000
+val_size = 1000
 
 checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
 
@@ -150,21 +151,23 @@ for epoch in range(0, epochs):
         if not loss > 0:
             exit()
 
-    eval_losses = evaluate(model, val_loader)
+    for pair, loader in zip(symbols, datasets):
+        eval_losses = evaluate(model, val_loader)
+        print(f"{pair} | Loss {sum(eval_losses) / len(eval_losses):.5f}")
 
     avgloss = sum(losses) / len(losses)
-    avgrlss = sum(eval_losses) / len(eval_losses)
+    # avgrlss = sum(eval_losses) / len(eval_losses)
 
     writer.add_scalar("Epoch/Loss", avgloss, epoch)
-    writer.add_scalar("Epoch/RLss", avgrlss, epoch)
+    # writer.add_scalar("Epoch/RLss", avgrlss, epoch)
 
     print(
-        f"Epoch {epoch + 1:03d} | Loss {avgloss:.5f} | RLss {avgrlss:.5f}",
+        f"Epoch {epoch + 1:03d} | Loss {avgloss:.5f}",
         end="",
     )
 
-    if avgrlss < best_loss:
-        best_loss = avgrlss
+    if avgloss < best_loss:
+        best_loss = avgloss
         print("  *", end="")
     print()
 

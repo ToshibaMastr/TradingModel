@@ -19,8 +19,8 @@ if device == "cuda":
     torch.cuda.ipc_collect()
 
 
-seq_len = 512
-pred_len = 12
+seq_len = 1024
+pred_len = 128
 timerange = "5m"
 
 config = DUETConfig()
@@ -37,27 +37,36 @@ if checkpoint.is_file():
     model.load_state_dict(cpdata["model"])
     print(f"✅ Checkpoint m loaded. Loss {cpdata['loss']:.6f}")
 
-checkpoint_path = Path("state") / "TM_S32.pth"
-if checkpoint_path.is_file():
-    cpdata = torch.load(checkpoint_path, map_location=device)
-    rmodel.load_state_dict(cpdata["model"])
-    print(f"✅ Checkpoint r loaded. Loss {cpdata['loss']:.6f}")
+# checkpoint_path = Path("state") / "TM_S32.pth"
+# if checkpoint_path.is_file():
+#     cpdata = torch.load(checkpoint_path, map_location=device)
+#     rmodel.load_state_dict(cpdata["model"])
+#     print(f"✅ Checkpoint r loaded. Loss {cpdata['loss']:.6f}")
 
 
-df = pd.read_pickle("data/ETH:USDT-5m.pkl")
-# df = ExchangeDownloader().download("ETH/USDT:USDT", timerange, 1000)
-df["signal"] = 0.0
-df["pred"] = np.nan
+# df = pd.read_pickle("data/ETH:USDT-5m.pkl")
+df = ExchangeDownloader().download("BTC/USDT:USDT", timerange, 4000)
 
 start = seq_len
 end = len(df) - 1
 
+while 1:
+    start = len(df) - pred_len - int(input("s: "))
+    end = len(df) - pred_len - int(input(": "))
+
+    for index in range(start, end):
+        df["pred"] = np.nan
+        pred = predict(model, df, index, seq_len, pred_len, device=device)
+        df.loc[pred.index, "pred"] = pred["close"]
+        show(df[index - seq_len : index + pred_len])
+exit()
+
 signal = genf(model, df, start, end, seq_len, pred_len, window_size=6)
 df.iloc[start : end + 1, df.columns.get_loc("signal")] = signal
 
-df.to_pickle("eth-signal.pkl")
+# df.to_pickle("eth-signal.pkl")
 
-show(df[-1000:])
+show(df[start:end])
 
 exit()
 
