@@ -43,7 +43,7 @@ class GatingNetwork(nn.Module):
         super().__init__()
         input_size = config.seq_len
         num_experts = config.num_experts
-        hidden_size = config.hidden_size
+        hidden_size = config.gate_size
 
         self.mlp = nn.Sequential(
             nn.Linear(input_size, hidden_size, bias=False),

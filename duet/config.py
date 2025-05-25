@@ -7,7 +7,6 @@ class DUETConfig:
     c_out: int = 1
     d_model: int = 512
     d_ff: int = 2048
-    hidden_size: int = 256
 
     n_heads: int = 8
     e_layers: int = 2
@@ -20,6 +19,7 @@ class DUETConfig:
 
     moving_avg: int = 25
 
+    gate_size: int = 256
     num_experts: int = 4
     noisy_gating: int = True
     k: int = 1
