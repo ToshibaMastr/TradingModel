@@ -7,7 +7,7 @@ from .utils import scale
 
 class TradeDataset(Dataset):
     def __init__(self, path: str, seq_len: int, pred_len: int):
-        df = pd.read_pickle(path)[-500_000:-4_000]
+        df = pd.read_pickle(path)[-50_000:-4_000]  # [-500_000:-4_000]
         df = df[~df.index.duplicated(keep="first")]
 
         self.seq_len = seq_len

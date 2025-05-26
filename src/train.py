@@ -8,21 +8,24 @@ from torch.utils.data import ConcatDataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from duet.config import DUETConfig
-from duet.model import DUETModel
+from duem.model import DUEMock
+from duet import DUETConfig, DUETModel
 
 from .dataset import TradeDataset
 from .utils import seq_split
 
-torch.manual_seed(2003)
-np.random.seed(2003)
-random.seed(2003)
-
-
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using ", device)
 
+seed = 2003
+
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
 if device == "cuda":
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
 
@@ -30,16 +33,11 @@ writer = SummaryWriter(log_dir="runs/DUET")
 
 
 symbols = [
-    # "ETH",
+    "ETH",
     # "ADA",
     # "XRP",
     # "BNB",
-    "BTC",
-    # "SOL",
-    # "MOVR",
-    # "ZRX",
-    # "PEOPLE",
-    # "WLD",
+    # "BTC",
 ]
 timerange = "5m"
 
@@ -51,7 +49,6 @@ epochs = 25
 learn = 3e-3
 val_size = 1000
 
-checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
 
 datasets = [
     TradeDataset(f"data/{symbol}:USDT-{timerange}.pkl", seq_len, pred_len)
@@ -80,9 +77,11 @@ config = DUETConfig()
 config.seq_len = seq_len
 config.pred_len = pred_len
 config.enc_in = 4
+
+model = DUEMock(4, 64, 2, 4, pred_len).to(device)  # 0.13
 model = DUETModel(config).to(device)
 
-criterion = nn.MSELoss(reduction="none")
+criterion = nn.L1Loss(reduction="none")
 optimizer = optim.AdamW(model.parameters(), lr=learn)
 scheduler = optim.lr_scheduler.OneCycleLR(
     optimizer,
@@ -97,6 +96,7 @@ best_loss = float("inf")
 
 weight = torch.tensor([2.8, 0.4, 0.4, 0.4], device=device)
 
+checkpoint = Path("state") / (config.name() + ".pth")
 if checkpoint.is_file():
     cpdata = torch.load(checkpoint, map_location=device)
     model.load_state_dict(cpdata["model"])
@@ -138,6 +138,9 @@ for epoch in range(0, epochs):
             loss = criterion(outputs, y) * weight
             loss = loss.mean()
 
+        if not torch.isfinite(loss):
+            exit()
+
         scaler.scale(loss).backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
@@ -147,36 +150,27 @@ for epoch in range(0, epochs):
         losses.append(loss.item())
         batch_bar.set_postfix(loss=f"{sum(losses) / len(losses):.4f}")
 
-    for loss in losses:
-        if not loss > 0:
-            exit()
-
-    for pair, loader in zip(symbols, datasets):
-        eval_losses = evaluate(model, val_loader)
-        print(f"{pair} | Loss {sum(eval_losses) / len(eval_losses):.5f}")
+    eval_losses = evaluate(model, val_loader)
 
     avgloss = sum(losses) / len(losses)
-    # avgrlss = sum(eval_losses) / len(eval_losses)
+    avgrlss = sum(eval_losses) / len(eval_losses)
 
     writer.add_scalar("Epoch/Loss", avgloss, epoch)
-    # writer.add_scalar("Epoch/RLss", avgrlss, epoch)
+    writer.add_scalar("Epoch/RLss", avgrlss, epoch)
 
-    print(
-        f"Epoch {epoch + 1:03d} | Loss {avgloss:.5f}",
-        end="",
-    )
+    print(f"Epoch {epoch + 1:03d} | Loss {avgloss:.5f} | RLss {avgrlss:.5f}", end="")
 
-    if avgloss < best_loss:
-        best_loss = avgloss
+    if avgrlss < best_loss:
+        best_loss = avgrlss
         print("  *", end="")
     print()
 
     torch.save(
         {
-            "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
+            "model": model.state_dict(),
             "loss": best_loss,
         },
         str(checkpoint),

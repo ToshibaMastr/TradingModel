@@ -20,7 +20,7 @@ if device == "cuda":
 
 
 seq_len = 1024
-pred_len = 128
+pred_len = 24
 timerange = "5m"
 
 config = DUETConfig()

@@ -129,7 +129,6 @@ for epoch in range(epochs):
     writer.add_scalar("Epoch/Loss", avgloss, epoch)
     writer.add_scalar("Epoch/RLss", avgrlss, epoch)
 
-    # print(torch.argmax(logits, dim=-1)[0].abs())
     print(
         f"Epoch {epoch + 1:03d} | Loss {avgloss:.6f} | RLss: {avgrlss:.6f}",
         end="",

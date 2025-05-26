@@ -15,11 +15,20 @@ class DUETConfig:
 
     activation: str = "gelu"
     dropout: float = 0.2
-    fc_dropout: float = 0.1
+    fc_dropout: float = 0.05
 
     moving_avg: int = 25
 
-    gate_size: int = 256
+    gate_size: int = 128
     num_experts: int = 4
     noisy_gating: int = True
-    k: int = 1
+    k: int = 3
+
+    def name(self) -> str:
+        return (
+            f"S{self.seq_len}P{self.pred_len}D{self.d_model}"
+            f"F{self.d_ff}H{self.n_heads}E{self.e_layers}G{self.gate_size}"
+            f"N{self.num_experts}K{self.k}O{int(self.noisy_gating)}"
+            f"R{self.dropout}C{self.fc_dropout}A{self.activation}"
+            f"M{self.moving_avg}".replace(".", "-")
+        )
