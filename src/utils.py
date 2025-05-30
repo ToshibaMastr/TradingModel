@@ -1,5 +1,5 @@
 from torch.utils.data import Subset
-
+import numpy as np
 
 def scale(series, mn: float = None, mx: float = None):
     if mn is None or mx is None:
@@ -11,6 +11,20 @@ def scale(series, mn: float = None, mx: float = None):
 
 def unscale(series, mn: float, mx: float):
     original = (series + 1) * (mx - mn) / 2 + mn
+    return original
+
+
+def scale_robust(val, iqr=None, median=None):
+    if iqr is None or median is None:
+        median = np.median(val)
+        q1 = np.percentile(val, 25)
+        q3 = np.percentile(val, 75)
+        iqr = q3 - q1
+    scaled = (val - median) / iqr
+    return scaled, iqr, median
+
+def unscale_robust(val, iqr, median):
+    original = (val * iqr) + median
     return original
 
 
