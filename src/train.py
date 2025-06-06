@@ -2,16 +2,17 @@ import random
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import GradScaler, autocast, nn, optim
 from torch.utils.data import ConcatDataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from duem.model import DUEMock
-from duet import DUETConfig, DUETModel
+from tsfs.models.duet import DUET, DUETConfig
 
 from .dataset import TradeDataset
+from .parseset import get_dafe
 from .utils import seq_split
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -29,36 +30,55 @@ if device == "cuda":
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
 
-writer = SummaryWriter(log_dir="runs/DUET")
 
+# LINK 0.4222
+# DOGE 0.4865
+# XLM 0.3860
+# TRX 0.5600
+# ADA 0.4227
+# XRP 0.4735
+# BNB 0.5465
+# LTC 0.4220
+# BTC 0.4141
+# ETH 0.4642
 
 symbols = [
+    # "LINK",
+    # "DOGE",
+    # "XLM",
+    # "TRX",
+    #
+    "ADA",
+    "XRP",
+    "BNB",
+    #
+    "LTC",
+    "BTC",
     "ETH",
-    # "ADA",
-    # "XRP",
-    # "BNB",
-    # "BTC",
 ]
-timerange = "5m"
+timerange = "15m"
 
-seq_len = 1024
+seq_len = 1024 + 512
 pred_len = 128
 
-batch_size = 386
-epochs = 25
+batch_size = 512
+epochs = 50
 learn = 3e-3
-val_size = 1000
+val_size = 4000
 
-
-datasets = [
-    TradeDataset(f"data/{symbol}:USDT-{timerange}.pkl", seq_len, pred_len)
-    for symbol in symbols
-]
-dataset = ConcatDataset(datasets)
-train_dataset, val_dataset = seq_split(dataset, [len(dataset) - val_size, val_size])
+datasets = []
+val_datasets = []
+for symbol in symbols:
+    df = pd.read_pickle(f"data/{symbol}:USDT-{timerange}.pkl")
+    dataset = TradeDataset(df, seq_len, pred_len)
+    train, val = seq_split(dataset, [len(dataset) - val_size, val_size])
+    datasets.append(train)
+    val_datasets.append(val)
+train_dataset = ConcatDataset(datasets)
+val_dataset = ConcatDataset(val_datasets)
 dataloader = DataLoader(
     train_dataset,
-    batch_size=batch_size,
+    batch_size,
     num_workers=12,
     pin_memory=True,
     shuffle=True,
@@ -66,10 +86,9 @@ dataloader = DataLoader(
 )
 val_loader = DataLoader(
     val_dataset,
-    batch_size=batch_size,
+    batch_size,
     num_workers=12,
     pin_memory=True,
-    shuffle=True,
     persistent_workers=True,
 )
 
@@ -77,11 +96,14 @@ config = DUETConfig()
 config.seq_len = seq_len
 config.pred_len = pred_len
 config.enc_in = 4
+config.c_out = 4
+model = DUET(config).to(device)
 
-model = DUEMock(4, 64, 2, 4, pred_len).to(device)  # 0.13
-model = DUETModel(config).to(device)
 
-criterion = nn.L1Loss(reduction="none")
+params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Params: {params:,}")
+
+criterion = nn.SmoothL1Loss(beta=0.5)
 optimizer = optim.AdamW(model.parameters(), lr=learn)
 scheduler = optim.lr_scheduler.OneCycleLR(
     optimizer,
@@ -94,51 +116,61 @@ scheduler = optim.lr_scheduler.OneCycleLR(
 scaler = GradScaler(device)
 best_loss = float("inf")
 
-weight = torch.tensor([2.8, 0.4, 0.4, 0.4], device=device)
-
-checkpoint = Path("state") / (config.name() + ".pth")
+total_epochs = 0
+modelname = model.name
+checkpoint = Path("state") / (modelname + ".pth")
 if checkpoint.is_file():
     cpdata = torch.load(checkpoint, map_location=device)
     model.load_state_dict(cpdata["model"])
     optimizer.load_state_dict(cpdata["optimizer"])
     # scheduler.load_state_dict(cpdata["scheduler"])
     scaler.load_state_dict(cpdata["scaler"])
-    # best_loss = cpdata["loss"]
+    best_loss = cpdata["loss"]
+    total_epochs = cpdata["epochs"]
     print(f"Loaded {cpdata['loss']}")
+
+log_dir = Path("runs")
+writer = SummaryWriter(log_dir / modelname)
 
 
 @torch.no_grad()
 def evaluate(model, loader):
     model.eval()
     losses = []
-    for x, y in loader:
+
+    batch_bar = tqdm(loader, desc="Real Loss", unit="batch")
+    for x, y, mark in batch_bar:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
+        mark = mark.to(device, non_blocking=True)
         with autocast(device):
-            outputs, _ = model(x)
-            loss = criterion(outputs[:, :, 0], y[:, :, 0])
-            loss = loss.mean()
+            outputs, _ = model(x, mark)
+            loss = criterion(outputs, y)
         losses.append(loss.item())
     return losses
 
+
+get_dafe("data/ETH:USDT-15m.pkl", model, seq_len, pred_len, val_size, batch_size)
+exit()
 
 for epoch in range(0, epochs):
     model.train()
     losses = []
 
     batch_bar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}", unit="batch")
-    for x, y in batch_bar:
+    for x, y, mark in batch_bar:
         optimizer.zero_grad()
 
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
+        mark = mark.to(device, non_blocking=True)
 
         with autocast(device):
-            outputs, _ = model(x)
-            loss = criterion(outputs, y) * weight
-            loss = loss.mean()
+            outputs, _ = model(x, mark)
+            loss = criterion(outputs, y)
 
         if not torch.isfinite(loss):
+            print("null loss")
             exit()
 
         scaler.scale(loss).backward()
@@ -150,13 +182,15 @@ for epoch in range(0, epochs):
         losses.append(loss.item())
         batch_bar.set_postfix(loss=f"{sum(losses) / len(losses):.4f}")
 
+    avgloss = sum(losses) / len(losses)
+    writer.add_scalar("Epoch/Loss", avgloss, epoch)
+
     eval_losses = evaluate(model, val_loader)
 
-    avgloss = sum(losses) / len(losses)
     avgrlss = sum(eval_losses) / len(eval_losses)
-
-    writer.add_scalar("Epoch/Loss", avgloss, epoch)
     writer.add_scalar("Epoch/RLss", avgrlss, epoch)
+
+    get_dafe("data/ETH:USDT-15m.pkl", model, seq_len, pred_len, val_size, batch_size)
 
     print(f"Epoch {epoch + 1:03d} | Loss {avgloss:.5f} | RLss {avgrlss:.5f}", end="")
 
@@ -170,11 +204,13 @@ for epoch in range(0, epochs):
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
+            "epochs": total_epochs + epoch,
             "model": model.state_dict(),
             "loss": best_loss,
         },
         str(checkpoint),
     )
+
 
 writer.close()
 

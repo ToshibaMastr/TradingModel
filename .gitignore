@@ -4,6 +4,7 @@ data/*
 runs/
 .why
 
+tsfs
 eth-signal.pkl
 
 # Byte-compiled / optimized / DLL files

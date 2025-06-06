@@ -4,9 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from duet.config import DUETConfig
-from duet.model import DUETModel
-from trader.model import TradeModel
+from tsfs.models.duet import DUETConfig, DUET
 
 from .download import ExchangeDownloader
 from .parseset import autogena, genf, predict, show
@@ -19,24 +17,23 @@ if device == "cuda":
     torch.cuda.ipc_collect()
 
 
-seq_len = 1024
-pred_len = 24
-timerange = "5m"
+seq_len = 2048
+pred_len = 128
 
 config = DUETConfig()
 config.seq_len = seq_len
 config.pred_len = pred_len
 config.enc_in = 4
-model = DUETModel(config).to(device)
+model = DUET(config).to(device)
 
-rmodel = TradeModel(3, 3, 64).to(device)
-
-checkpoint = Path("state") / f"S{seq_len}P{pred_len}:{timerange}.pth"
+modelname = model.name
+checkpoint = Path("state") / (modelname + ".pth")
 if checkpoint.is_file():
     cpdata = torch.load(checkpoint)
     model.load_state_dict(cpdata["model"])
     print(f"✅ Checkpoint m loaded. Loss {cpdata['loss']:.6f}")
 
+# rmodel = TradeModel(3, 3, 64).to(device)
 # checkpoint_path = Path("state") / "TM_S32.pth"
 # if checkpoint_path.is_file():
 #     cpdata = torch.load(checkpoint_path, map_location=device)
@@ -44,25 +41,46 @@ if checkpoint.is_file():
 #     print(f"✅ Checkpoint r loaded. Loss {cpdata['loss']:.6f}")
 
 
-# df = pd.read_pickle("data/ETH:USDT-5m.pkl")
-df = ExchangeDownloader().download("BTC/USDT:USDT", timerange, 4000)
+# df = pd.read_pickle("data/ETH:USDT-15m.pkl")[-50000:-45000]
+df = ExchangeDownloader().download("ETH/USDT:USDT", "15m", 2500)
+df["signal"] = np.nan
+df["avg_0"] = np.nan
+df["avg_1"] = np.nan
+df["avg_2"] = np.nan
+df["avg_3"] = np.nan
 
 start = seq_len
-end = len(df) - 1
+end = len(df)
 
-while 1:
-    start = len(df) - pred_len - int(input("s: "))
-    end = len(df) - pred_len - int(input(": "))
+signal, avg0 ,avg1 ,avg2 ,avg3 = genf(model, df, start, end, seq_len, pred_len, window_size=48)
+# df.iloc[start - 1 : end, df.columns.get_loc("signal")] = signal
+df.iloc[start - 1 : end, df.columns.get_loc("avg_0")] = avg0
+df.iloc[start - 1 : end, df.columns.get_loc("avg_1")] = avg1
+df.iloc[start - 1 : end, df.columns.get_loc("avg_2")] = avg2
+df.iloc[start - 1 : end, df.columns.get_loc("avg_3")] = avg3
 
-    for index in range(start, end):
-        df["pred"] = np.nan
-        pred = predict(model, df, index, seq_len, pred_len, device=device)
-        df.loc[pred.index, "pred"] = pred["close"]
-        show(df[index - seq_len : index + pred_len])
+show(df[start : end])
 exit()
 
-signal = genf(model, df, start, end, seq_len, pred_len, window_size=6)
-df.iloc[start : end + 1, df.columns.get_loc("signal")] = signal
+while 1:
+    index = len(df) - pred_len - int(input("s: "))
+    df["pred"] = np.nan
+    pred = predict(model, df, index, seq_len, pred_len, device=device)
+    df.loc[pred.index, "pred"] = pred["close"]
+    show(df[index - seq_len : index + pred_len])
+exit()
+
+# while 1:
+#     start = len(df) - pred_len - int(input("s: "))
+#     end = len(df) - pred_len - int(input("e: "))
+#
+#     for index in range(start, end):
+#         df["pred"] = np.nan
+#         pred = predict(model, df, index, seq_len, pred_len, device=device)
+#         df.loc[pred.index, "pred"] = pred["close"]
+#         show(df[index - seq_len : index + pred_len])
+# exit()
+
 
 # df.to_pickle("eth-signal.pkl")
 
