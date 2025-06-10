@@ -3,11 +3,21 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .utils import scale_robust
+from .scaler import Scaler
 
 
 class TradeDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, seq_len: int, pred_len: int):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        price_scaler: Scaler,
+        volume_scaler: Scaler,
+        seq_len: int,
+        pred_len: int,
+    ):
+        self.price_scaler = price_scaler
+        self.volume_scaler = volume_scaler
+
         self.seq_len = seq_len
         self.pred_len = pred_len
 
@@ -25,21 +35,29 @@ class TradeDataset(Dataset):
         input_seq = self.data[s_begin:s_end]
         target_seq = self.data[s_end:r_end]
 
-        price, pmn, pmx = scale_robust(input_seq[:, 0:3])
-        volume, vmn, vmx = scale_robust(input_seq[:, 3:])
+        price, pctx = self.price_scaler.scale(input_seq[:, 0:3])
+        volume, vctx = self.volume_scaler.scale(input_seq[:, 3:])
 
-        tprice, _, _ = scale_robust(target_seq[:, 0:3], pmn, pmx)
-        tvolume, _, _ = scale_robust(target_seq[:, 3:], vmn, vmx)
+        tprice, _ = self.price_scaler.scale(target_seq[:, 0:3], pctx)
+        tvolume, _ = self.volume_scaler.scale(target_seq[:, 3:], vctx)
 
         x = np.concat([price, volume], axis=1)
         y = np.concat([tprice, tvolume], axis=1)
         mark = self.feats[s_begin:r_end]
 
+        context = np.concat([[pctx], [vctx]], axis=0)
+
         return (
             torch.FloatTensor(x),
             torch.FloatTensor(y),
-            torch.FloatTensor(mark)
+            torch.FloatTensor(mark),
+            context,
         )
+
+    def inverse(self, pred, context) -> np.ndarray:
+        price = self.price_scaler.unscale(pred[:, 0:3], context[0])
+        volume = self.volume_scaler.unscale(pred[:, 3:], context[1])
+        return np.concat([price, volume], axis=1)
 
     @staticmethod
     def _gen_time_features(dates: pd.Index) -> np.ndarray:

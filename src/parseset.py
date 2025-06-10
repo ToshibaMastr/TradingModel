@@ -96,51 +96,6 @@ def show(data, signals: list[dict] = []):
             col=1,
         )
 
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data["avg_0"],
-            mode="lines",
-            line=dict(color="red", width=1),
-            name="avg",
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data["avg_1"],
-            mode="lines",
-            line=dict(color="green", width=1),
-            name="avg",
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data["avg_2"],
-            mode="lines",
-            line=dict(color="blue", width=1),
-            name="avg",
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data["avg_3"],
-            mode="lines",
-            line=dict(color="orange", width=1),
-            name="avg",
-        ),
-        row=1,
-        col=1,
-    )
-
     fig.update_layout(
         yaxis_title="Цена",
         xaxis_rangeslider_visible=False,
@@ -165,14 +120,21 @@ def show(data, signals: list[dict] = []):
 
 @torch.no_grad()
 def get_dafe(
-    file, model, seq_len, pred_len, val_size, batch_size, size=10_000, device="cuda"
+    df,
+    scaler_price,
+    volume_price,
+    model,
+    seq_len,
+    pred_len,
+    val_size,
+    batch_size,
+    device="cuda",
 ):
     model.eval()
     losses = []
 
-    df = pd.read_pickle(file)[-size:]
     loader = DataLoader(
-        TradeDataset(df, seq_len, pred_len),
+        TradeDataset(df, scaler_price, volume_price, seq_len, pred_len),
         batch_size,
         num_workers=12,
         pin_memory=True,
@@ -181,13 +143,13 @@ def get_dafe(
     df = df[seq_len:]
 
     batch_bar = tqdm(loader, desc="Dafe Loss", unit="batch")
-    for x, y, mark in batch_bar:
+    for x, y, mark, _ in batch_bar:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         mark = mark.to(device, non_blocking=True)
         with autocast(device):
             outputs, _ = model(x, mark)
-            loss = (outputs - y).mean(dim=(-1, -2)).abs()
+            loss = (outputs - y)[:, :, 0:1].abs().mean(dim=(-1, -2))
         losses += loss.tolist()
 
     fig = make_subplots(
@@ -241,7 +203,7 @@ def get_dafe(
             name="Train Loss Distribution",
             nbinsx=400,
             marker_color="red",
-            histnorm="probability"
+            histnorm="probability",
         ),
         row=3,
         col=1,
@@ -252,7 +214,7 @@ def get_dafe(
             name="Val Loss Distribution",
             nbinsx=400,
             marker_color="green",
-            histnorm="probability"
+            histnorm="probability",
         ),
         row=3,
         col=1,
@@ -261,12 +223,11 @@ def get_dafe(
         xaxis_rangeslider_visible=False,
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        template="plotly_dark"
+        template="plotly_dark",
     )
     fig.show()
 
-
-def predict(model, df, index, seq_len, pred_len, window_size=None, device="cuda"):
+def predict(model, price_scaler, volume_scaler, df, index, seq_len, pred_len, window_size=None, device="cuda"):
     if window_size is None:
         window_size = pred_len
     elif window_size > pred_len:
@@ -284,8 +245,8 @@ def predict(model, df, index, seq_len, pred_len, window_size=None, device="cuda"
 
     input_seq = data[s_begin:s_end]
 
-    price, pmn, pmx = scale_robust(input_seq[:, 0:3])
-    volume, vmn, vmx = scale_robust(input_seq[:, 3:4])
+    price, pctx = price_scaler.scale(input_seq[:, 0:3])
+    volume, vctx = volume_scaler.scale(input_seq[:, 3:])
 
     x = np.concat([price, volume], axis=1)
     x = torch.FloatTensor(x).unsqueeze(0).to(device)
@@ -296,10 +257,11 @@ def predict(model, df, index, seq_len, pred_len, window_size=None, device="cuda"
     model.eval()
     with torch.no_grad(), autocast(device):
         outputs, _ = model(x, mark)
+        outputs = outputs.cpu().numpy()[0]
 
     pred_index = df.index[s_end:r_end]
-    price = unscale_robust(outputs[0, :window_size, 0:3], pmn, pmx).cpu().numpy()
-    volume = unscale_robust(outputs[0, :window_size, 3:4], vmn, vmx).cpu().numpy()
+    price = price_scaler.unscale(outputs[:window_size, 0:3], pctx)
+    volume = volume_scaler.unscale(outputs[:window_size, 3:], vctx)
 
     result = pd.DataFrame(
         data=np.hstack([price, volume]),
@@ -377,34 +339,21 @@ def genf(
 
     index = 0
     deltas = torch.empty(num_samples, device=device)
-    avg0 = torch.empty(num_samples, device=device)
-    avg1 = torch.empty(num_samples, device=device)
-    avg2 = torch.empty(num_samples, device=device)
-    avg3 = torch.empty(num_samples, device=device)
     for pred, (pmn, pmx), x in zip(predictions, min_max_values, batch_inputs_x):
         pred = unscale_robust(pred[:, 0:3], pmn, pmx)
 
         close_delta = pred[:window_size, 0] / pred[0, 0] - 1
         deltas[index] = close_delta.mean()
 
-        avg0[index] = pred[0, 0]
-        avg1[index] = pred[31, 0]
-        avg2[index] = pred[63, 0]
-        avg3[index] = pred[127, 0]
         index += 1
 
         if index % 100 == 0:
             print(index)
 
-    raw_avg0 = avg0.cpu().numpy()
-    raw_avg1 = avg1.cpu().numpy()
-    raw_avg2 = avg2.cpu().numpy()
-    raw_avg3 = avg3.cpu().numpy()
-
     alpha = 0.4
     raw_signal = deltas.cpu().numpy() * 10
     raw_signal = np.sign(raw_signal) * (np.abs(raw_signal) ** alpha)
-    return raw_signal, raw_avg0, raw_avg1, raw_avg2, raw_avg3
+    return raw_signal
 
 
 def gena(model, data, index, seq_len, device):

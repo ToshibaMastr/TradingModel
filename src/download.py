@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import ccxt
 import pandas as pd
 
@@ -44,23 +46,38 @@ class ExchangeDownloader:
 
 def download(pair: str, timeframe: str, length: int = 4_000_000):
     pair += "/USDT:USDT"
-    df = ExchangeDownloader().download(pair, timeframe, length)
+
     pairname = pair.split(":")[0].replace("/", ":")
-    df.to_pickle(f"data/{pairname}-{timeframe}.pkl")
+    file = Path("data") / f"{pairname}-{timeframe}.pkl"
+
+    if not file.exists():
+        df = ExchangeDownloader().download(pair, timeframe, length)
+        df.to_pickle(file)
 
 
 if __name__ == "__main__":
     timeframe = "15m"
+
     for symbol in [
-        "XLM",
-        "TRX",
-        "LINK",
-        "DOGE",
         "BTC",
-        "XRP",
-        "ADA",
-        "BNB",
-        "LTC",
         "ETH",
+        "XRP",
+        "BNB",
+        "SOL",
+        "USDC",
+        "DOGE",
+        "TRX",
+        "ADA",
+        "HYPE",
+        "SUI",
+        "LINK",
+        "AVAX",
+        "XLM",
+        "BCH",
+        "TON",
+        "HBAR",
+        "LTC",
+        "DOT",
+        "XMR",
     ]:
         download(symbol, timeframe)

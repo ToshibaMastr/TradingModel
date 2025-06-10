@@ -1,7 +1,7 @@
 from torch.utils.data import Subset
 import numpy as np
 
-def scale(series, mn: float = None, mx: float = None):
+def scale(series, mn = None, mx = None):
     if mn is None or mx is None:
         val = series.values
         mn, mx = val.min(), val.max()
@@ -25,6 +25,21 @@ def scale_robust(val, iqr=None, median=None):
 
 def unscale_robust(val, iqr, median):
     original = (val * iqr) + median
+    return original
+
+
+def scale_arctan(val, sensitivity=1.0, mean=None):
+    if mean is None:
+        mean = val.mean()
+    normalized = (val - mean) / mean
+    scaled = np.arctan(normalized * sensitivity) * (2 / np.pi)
+    return scaled, mean, sensitivity
+
+
+def unscale_arctan(val, mean, sensitivity):
+    arctan_reversed = val * (np.pi / 2)
+    normalized = np.tan(arctan_reversed) / sensitivity
+    original = (normalized * mean) + mean
     return original
 
 

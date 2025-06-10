@@ -1,23 +1,28 @@
 from pathlib import Path
 
+import numpy
 import numpy as np
 import pandas as pd
 import torch
 
-from tsfs.models.duet import DUETConfig, DUET
+from tsfs.models.duet import DUET, DUETConfig
 
 from .download import ExchangeDownloader
-from .parseset import autogena, genf, predict, show
+from .parseset import genf, get_dafe, predict, show
+from .scaler import ArcTan, Robust
+
+torch.serialization.add_safe_globals([numpy._core.multiarray.scalar])
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print("Using ", device)
 
 if device == "cuda":
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
 
+batch_size = 512
+val_size = 1024
 
-seq_len = 2048
+seq_len = 1024
 pred_len = 128
 
 config = DUETConfig()
@@ -27,9 +32,9 @@ config.enc_in = 4
 model = DUET(config).to(device)
 
 modelname = model.name
-checkpoint = Path("state") / (modelname + ".pth")
+checkpoint = Path("state") / "DUET1024RobustArcTan.pth"
 if checkpoint.is_file():
-    cpdata = torch.load(checkpoint)
+    cpdata = torch.load(checkpoint, weights_only=False)
     model.load_state_dict(cpdata["model"])
     print(f"✅ Checkpoint m loaded. Loss {cpdata['loss']:.6f}")
 
@@ -40,26 +45,31 @@ if checkpoint.is_file():
 #     rmodel.load_state_dict(cpdata["model"])
 #     print(f"✅ Checkpoint r loaded. Loss {cpdata['loss']:.6f}")
 
+# df = ExchangeDownloader().download("ETH/USDT:USDT", "15m", 2500)
+df = pd.read_pickle("data/ETH:USDT-15m.pkl")[-8000:]
 
-# df = pd.read_pickle("data/ETH:USDT-15m.pkl")[-50000:-45000]
-df = ExchangeDownloader().download("ETH/USDT:USDT", "15m", 2500)
 df["signal"] = np.nan
-df["avg_0"] = np.nan
-df["avg_1"] = np.nan
-df["avg_2"] = np.nan
-df["avg_3"] = np.nan
 
 start = seq_len
 end = len(df)
 
-signal, avg0 ,avg1 ,avg2 ,avg3 = genf(model, df, start, end, seq_len, pred_len, window_size=48)
-# df.iloc[start - 1 : end, df.columns.get_loc("signal")] = signal
-df.iloc[start - 1 : end, df.columns.get_loc("avg_0")] = avg0
-df.iloc[start - 1 : end, df.columns.get_loc("avg_1")] = avg1
-df.iloc[start - 1 : end, df.columns.get_loc("avg_2")] = avg2
-df.iloc[start - 1 : end, df.columns.get_loc("avg_3")] = avg3
 
-show(df[start : end])
+price_scaler = Robust()
+volume_scaler = ArcTan()
+
+index = len(df) - pred_len - int(input("s: "))
+df["pred"] = np.nan
+pred = predict(
+    model, price_scaler, volume_scaler, df, index, seq_len, pred_len, device=device
+)
+df.loc[pred.index, "pred"] = pred["close"]
+
+show(df[index - seq_len : index + pred_len])
+
+exit()
+
+get_dafe(df, scaler_price, volume_price, model, seq_len, pred_len, 4000, batch_size)
+
 exit()
 
 while 1:
@@ -87,7 +97,7 @@ exit()
 show(df[start:end])
 
 exit()
-
+ExchangeDownloader
 for i in [6, 12, 16, 20, 24]:  # [6, 12, 16, 20, 24]
     signal = genf(model, df, start, end, seq_len, pred_len, window_size=i)
     df.iloc[start : end + 1, df.columns.get_loc("signal")] = signal
