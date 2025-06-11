@@ -121,8 +121,7 @@ def show(data, signals: list[dict] = []):
 @torch.no_grad()
 def get_dafe(
     df,
-    scaler_price,
-    volume_price,
+    scaler,
     model,
     seq_len,
     pred_len,
@@ -134,7 +133,7 @@ def get_dafe(
     losses = []
 
     loader = DataLoader(
-        TradeDataset(df, scaler_price, volume_price, seq_len, pred_len),
+        TradeDataset(df, scaler, seq_len, pred_len),
         batch_size,
         num_workers=12,
         pin_memory=True,
@@ -149,7 +148,7 @@ def get_dafe(
         mark = mark.to(device, non_blocking=True)
         with autocast(device):
             outputs, _ = model(x, mark)
-            loss = (outputs - y)[:, :, 0:1].abs().mean(dim=(-1, -2))
+            loss = (outputs - y).abs().mean(dim=(-1, -2))
         losses += loss.tolist()
 
     fig = make_subplots(
@@ -227,7 +226,18 @@ def get_dafe(
     )
     fig.show()
 
-def predict(model, price_scaler, volume_scaler, df, index, seq_len, pred_len, window_size=None, device="cuda"):
+
+def predict(
+    model,
+    price_scaler,
+    volume_scaler,
+    df,
+    index,
+    seq_len,
+    pred_len,
+    window_size=None,
+    device="cuda",
+):
     if window_size is None:
         window_size = pred_len
     elif window_size > pred_len:

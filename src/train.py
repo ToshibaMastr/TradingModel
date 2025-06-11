@@ -1,4 +1,5 @@
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,33 @@ from .dataset import TradeDataset
 from .scaler import ArcTan, Cache, MinMax, Robust
 from .utils import seq_split
 
-# torch.autograd.set_detect_anomaly(True)
+torch.autograd.set_detect_anomaly(True)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Using", device.upper())
+
+
+@dataclass
+class TaskConfig:
+    seq_len = 1024
+    pred_len = 128
+    enc_in = 3
+    c_out = 3
+
+
+@dataclass
+class DataConfig:
+    symbols = []
+    timerange = "15m"
+    val_size = 4000
+    scaler_name = "Robust"
+
+
+@dataclass
+class TrainingConfig:
+    learning_rate = 3e-3
+    weight_decay = 1e-2
+    gradient_clip = 1.0
 
 
 def set_seeds(seed: int):
@@ -32,38 +59,46 @@ def init_device(device: str):
         torch.cuda.ipc_collect()
 
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print("Using", device.upper())
+def create_loaders(
+    config: DataConfig, task: TaskConfig
+) -> tuple[DataLoader, DataLoader]:
+    datasets = []
+    val_datasets = []
+    for symbol in config.symbols:
+        df = pd.read_pickle(f"data/{symbol}:USDT-{config.timerange}.pkl")
+        dataset = TradeDataset(df, scaler_, task.seq_len, task.pred_len)
+        train, val = seq_split(dataset, [len(dataset) - val_size, val_size])
+        datasets.append(train)
+        val_datasets.append(val)
+
+    train_loader = DataLoader(
+        ConcatDataset(datasets),
+        batch_size,
+        shuffle=True,
+        num_workers=12,
+        pin_memory=device == "cuda",
+        persistent_workers=True,
+    )
+    val_loader = DataLoader(
+        ConcatDataset(val_datasets),
+        batch_size,
+        num_workers=12,
+        pin_memory=device == "cuda",
+        persistent_workers=True,
+    )
+    return train_loader, val_loader
+
 
 set_seeds(2003)
 init_device(device)
 
+data = DataConfig()
+data.symbols = ["BTC", "ETH", "XRP"]
 
-symbols = [
-    "BTC",
-    "ETH",
-    "XRP",
-    # "BNB",
-    # "SOL",
-    # "USDC",
-    # "DOGE",
-    # "TRX",
-    # "ADA",
-    # "SUI",
-    # "LINK",
-    # "AVAX",
-    # "XLM",
-    # "BCH",
-    # "TON",
-    # "HBAR",
-    # "LTC",
-    # "DOT",
-    # "XMR",
-]
-timerange = "15m"
+task = TaskConfig()
+task.seq_len = 1024
+task.pred_len = 128
 
-seq_len = 1024
-pred_len = 128
 
 batch_size = 512
 epochs = 10
@@ -71,43 +106,15 @@ learn = 3e-3
 val_size = 4000
 
 scalers = {"Robust": Robust, "MinMax": MinMax, "ArcTan": ArcTan, "Cache": Cache}
+scalern = "Robust"
+scaler_ = scalers[scalern]()
 
-price_scaler = "Cache"
-volume_scaler = "MinMax"
-
-price_scaler_ = scalers[price_scaler]()
-volume_scaler_ = scalers[volume_scaler]()
-
-datasets = []
-val_datasets = []
-for symbol in symbols:
-    df = pd.read_pickle(f"data/{symbol}:USDT-{timerange}.pkl")[-50000:]
-    dataset = TradeDataset(df, price_scaler_, volume_scaler_, seq_len, pred_len)
-    train, val = seq_split(dataset, [len(dataset) - val_size, val_size])
-    datasets.append(train)
-    val_datasets.append(val)
-
-dataloader = DataLoader(
-    ConcatDataset(datasets),
-    batch_size,
-    shuffle=True,
-    num_workers=12,
-    pin_memory=device == "cuda",
-    persistent_workers=True,
-)
-val_loader = DataLoader(
-    ConcatDataset(val_datasets),
-    batch_size,
-    num_workers=12,
-    pin_memory=device == "cuda",
-    persistent_workers=True,
-)
 
 config = DUETConfig()
-config.seq_len = seq_len
-config.pred_len = pred_len
-config.enc_in = 4
-config.c_out = 4
+config.seq_len = task.seq_len
+config.pred_len = task.pred_len
+config.enc_in = task.enc_in
+config.c_out = task.c_out
 model = DUET(config).to(device)
 
 params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -120,7 +127,7 @@ scheduler = optim.lr_scheduler.OneCycleLR(
     optimizer,
     max_lr=learn,
     epochs=epochs,
-    steps_per_epoch=len(dataloader),
+    steps_per_epoch=1000,
     pct_start=0.3,
     anneal_strategy="cos",
 )
@@ -128,10 +135,10 @@ scaler = GradScaler(device)
 best_loss = float("inf")
 
 total_epochs = 0
-modelname = model.name + f"{seq_len}{price_scaler}{volume_scaler}"
+modelname = model.name
 checkpoint = Path("state") / (modelname + ".pth")
-if checkpoint.is_file() and False:
-    cpdata = torch.load(checkpoint, map_location=device, weights_only=False)
+if checkpoint.is_file():
+    cpdata = torch.load(checkpoint, map_location=device)
     model.load_state_dict(cpdata["model"])
     optimizer.load_state_dict(cpdata["optimizer"])
     # scheduler.load_state_dict(cpdata["scheduler"])
@@ -147,44 +154,30 @@ writer = SummaryWriter(log_dir / modelname)
 @torch.no_grad()
 def evaluate(model, loader):
     model.eval()
-    losses = []
 
-    batch_bar = tqdm(loader, desc="Evaluate", unit="batch")
-    for x, y, mark, context in batch_bar:
+    for x, y, mark, context in loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         mark = mark.to(device, non_blocking=True)
         with autocast(device):
             outputs, _ = model(x, mark)
 
-        for b in range(len(outputs)):
-            ctx = context[b].cpu().numpy()
-            pred = outputs[b].cpu().numpy()
-            target = y[b].cpu().numpy()
+        # for i in range(len(outputs)):
+        #     ctx = context[i].cpu().numpy()
+        #     pred = outputs[i].cpu().numpy()
+        #     target = y[i].cpu().numpy()
 
-            pred = dataset.inverse(pred, ctx)
-            target = dataset.inverse(target, ctx)
+        #     pred = dataset.inverse(pred, ctx)
+        #     target = dataset.inverse(target, ctx)
 
-            pred = pred[:, 0:1]
-            target = target[:, 0:1]
-
-            # import plotly.graph_objects as go
-            # fig = go.Figure()
-            # fig.add_trace(go.Scatter(y=pred.flatten(), name="Predictions"))
-            # fig.add_trace(go.Scatter(y=target.flatten(), name="Target"))
-            # fig.show()
-            # exit()
-
-            losses.extend(abs(pred - target).mean(axis=1))
-    return np.array(losses)
+        # yield abs(pred - target).mean()
+        yield abs(y - outputs).mean()
 
 
 def train(model, loader):
     model.train()
-    losses = []
 
-    batch_bar = tqdm(loader, desc="Train", unit="batch")
-    for x, y, mark, _ in batch_bar:
+    for x, y, mark, _ in loader:
         optimizer.zero_grad()
 
         x = x.to(device, non_blocking=True)
@@ -210,55 +203,35 @@ def train(model, loader):
         scaler.update()
         scheduler.step()
 
-        losses.append(loss.item())
-        batch_bar.set_postfix(loss=f"{sum(losses) / len(losses):.4f}")
+        yield loss.item()
 
-    return np.array(losses)
 
+train_loader, val_loader = create_loaders(data, task)
 
 for epoch in range(0, epochs):
-    avgloss = train(model, dataloader).mean()
-    writer.add_scalar("Epoch/Loss", avgloss, epoch)
+    index = 0
+    pbar = tqdm(train(model, train_loader), desc="Training", unit="batch", total=len(train_loader))
+    for loss in pbar:
+        writer.add_scalar("Epoch/Loss", loss, index)
+        pbar.set_postfix(loss=f"{loss:.4f}")
+        index += 1
 
-    avgrlss = evaluate(model, val_loader).mean()
-    writer.add_scalar("Epoch/RLss", avgrlss, epoch)
+    index = 0
+    pbar = tqdm(evaluate(model, val_loader), desc="Evalute", unit="batch", total=len(val_loader))
+    for loss in pbar:
+        writer.add_scalar("Epoch/RLss", loss, index)
+        pbar.set_postfix(loss=f"{loss:.4f}")
+        index += 1
 
-    # ataset_ = pd.read_pickle("data/ETH:USDT-15m.pkl")[-8000:]
-    # et_dafe(
-    #    dataset_,
-    #    price_scaler_,
-    #    volume_scaler_,
-    #    model,
-    #    seq_len,
-    #    pred_len,
-    #    val_size,
-    #    batch_size,
-    #
-
-    # index = len(dataset_) - pred_len
-    # dataset_["pred"] = np.nan
-    # pred = predict(
-    #     model,
-    #     price_scaler_,
-    #     volume_scaler_,
-    #     dataset_,
-    #     index,
-    #     seq_len,
-    #     pred_len,
-    #     device=device,
+    # print(
+    #     f"Epoch {epoch + 1:03d}/{epochs} | Loss {avgloss:.5f} | RLss {avgrlss:.5f}",
+    #     end="",
     # )
-    # dataset_.loc[pred.index, "pred"] = pred["close"]
-    # show(dataset_[index - seq_len : index + pred_len])
 
-    print(
-        f"Epoch {epoch + 1:03d}/{epochs} | Loss {avgloss:.5f} | RLss {avgrlss:.5f}",
-        end="",
-    )
-
-    if avgrlss < best_loss:
-        best_loss = avgrlss
-        print("  *", end="")
-    print()
+    # if avgrlss < best_loss:
+    #     best_loss = avgrlss
+    #     print("  *", end="")
+    # print()
 
     torch.save(
         {
@@ -273,6 +246,5 @@ for epoch in range(0, epochs):
     )
 
 writer.close()
-
 val_loader._iterator._shutdown_workers()
 dataloader._iterator._shutdown_workers()
