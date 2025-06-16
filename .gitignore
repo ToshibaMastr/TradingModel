@@ -1,4 +1,6 @@
 # Viru
+user_data/
+
 state/*
 data/*
 runs/
