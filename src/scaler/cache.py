@@ -2,7 +2,7 @@ import numpy as np
 
 
 class Cache:
-    def scale(self, data: np.ndarray, context: tuple[float, float] | None = None):
+    def __call__(self, data: np.ndarray, context: tuple[float, float] | None = None):
         if context is None:
             mean = data.mean()
         else:

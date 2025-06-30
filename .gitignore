@@ -1,10 +1,12 @@
 # Viru
 user_data/
-
+trashcan/
 state/*
 data/*
 runs/
+atma/
 .why
+atm/
 
 tsfs
 eth-signal.pkl

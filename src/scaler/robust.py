@@ -2,7 +2,7 @@ import numpy as np
 
 
 class Robust:
-    def scale(self, data: np.ndarray, context: tuple[float, float] | None = None):
+    def __call__(self, data: np.ndarray, context: tuple[float, float] | None = None):
         if context is None:
             median = np.median(data)
             q1 = np.percentile(data, 25)

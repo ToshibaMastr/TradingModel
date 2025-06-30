@@ -1,20 +1,17 @@
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 from torch import GradScaler, autocast, nn, optim
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
-
-from tsfs.models.duet import DUET, DUETConfig
 from tsfs.core import TaskConfig
+from tsfs.models.duet import DUET, DUETConfig
 
 from .data import DatasetR
-from .scaler import ArcTan, Cache, MinMax, Robust
 
 torch.autograd.set_detect_anomaly(False)
 
@@ -33,10 +30,12 @@ def user_data_init(path: Path):
     for dir in ["runs", "state", "data"]:
         (user_data / dir).mkdir(parents=True, exist_ok=True)
 
+
 def set_seeds(seed: int):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
 
 def init_device(device: str):
     if device == "cuda":
@@ -60,24 +59,24 @@ symbols = [
     "XRP",
     "BNB",
     "SOL",
-    "USDC",
-    "DOGE",
-    "TRX",
-    "ADA",
-    "SUI",
-    "LINK",
-    "AVAX",
-    "XLM",
-    "BCH",
-    "TON",
-    "HBAR",
-    "LTC",
-    "DOT",
-    "XMR",
+    #     "USDC",
+    #     "DOGE",
+    #     "TRX",
+    #     "ADA",
+    #     "SUI",
+    #     "LINK",
+    #     "AVAX",
+    #     "XLM",
+    #     "BCH",
+    #     "TON",
+    #     "HBAR",
+    #     "LTC",
+    #     "DOT",
+    #     "XMR",
 ]
 
 dataset = DatasetR(user_data / "data", symbols)
-task = TaskConfig(1024, 128)
+task = TaskConfig(1024, 32)
 training = TrainingConfig()
 
 config = DUETConfig()
@@ -89,16 +88,18 @@ params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Params: {params:,}")
 
 
-epochs = 10
+epochs = 20
 
 
 criterion = nn.MSELoss()
-optimizer = optim.AdamW(model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay)
-scheduler = optim.lr_scheduler.OneCycleLR(
+optimizer = optim.AdamW(
+    model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay
+)
+scheduler = lr_scheduler.OneCycleLR(
     optimizer,
     max_lr=training.learning_rate,
     epochs=epochs,
-    steps_per_epoch=1000,
+    steps_per_epoch=1921,
     pct_start=0.3,
     anneal_strategy="cos",
 )
@@ -130,6 +131,7 @@ def evaluate(model, loader):
             outputs, _ = model(x, mark)
         yield abs(y - outputs).mean()
 
+
 def train(model, loader):
     model.train()
 
@@ -140,7 +142,7 @@ def train(model, loader):
         y = y.to(device, non_blocking=True)
         mark = mark.to(device, non_blocking=True)
 
-        with autocast(device, dtype=torch.float32):
+        with autocast(device):
             outputs, _ = model(x, mark)
             loss = criterion(outputs, y)
 
@@ -162,27 +164,34 @@ def train(model, loader):
 
         yield loss.item()
 
+
 writer = SummaryWriter(user_data / "runs" / runname)
 
-train_loader, val_loader = dataset.loaders(task, 512, device)
+train_loader, val_loader = dataset.loaders(task, [4000], device=device)
 
 for epoch in range(total_epochs, epochs):
     train_loss = np.ndarray([len(train_loader)])
-    pbar = tqdm(train(model, train_loader), desc="Training", unit="batch", total=len(train_loader))
+    pbar = tqdm(
+        train(model, train_loader),
+        desc="Training",
+        unit="batch",
+        total=len(train_loader),
+    )
     for i, loss in enumerate(pbar):
-        writer.add_scalar("Epoch/Loss", loss, i)
-        pbar.set_postfix(loss=f"{loss:.4f}")
         train_loss[i] = loss
+        writer.add_scalar("train/loss", loss, i)
+        pbar.set_postfix(loss=f"{train_loss[: i + 1].mean():.4f}")
     avgloss = train_loss.mean()
 
     evalute_loss = np.ndarray([len(val_loader)])
-    pbar = tqdm(evaluate(model, val_loader), desc="Evalute", unit="batch", total=len(val_loader))
+    pbar = tqdm(
+        evaluate(model, val_loader), desc="Evalute", unit="batch", total=len(val_loader)
+    )
     for i, loss in enumerate(pbar):
-        writer.add_scalar("Epoch/RLss", loss, i)
-        pbar.set_postfix(loss=f"{loss:.4f}")
         evalute_loss[i] = loss
+        writer.add_scalar("train/real loss", loss, i)
+        pbar.set_postfix(loss=f"{evalute_loss[: i + 1].mean():.4f}")
     avgrlss = evalute_loss.mean()
-
 
     print(
         f"Epoch {epoch + 1:03d}/{epochs} | Loss {avgloss:.5f} | RLss {avgrlss:.5f}",
@@ -193,7 +202,6 @@ for epoch in range(total_epochs, epochs):
         best_loss = avgrlss
         print("  *", end="")
     print()
-
 
     torch.save(
         {

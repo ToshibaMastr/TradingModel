@@ -5,7 +5,7 @@ class ArcTan:
     def __init__(self, sensitivity: float = 1.0):
         self.sensitivity = sensitivity
 
-    def scale(self, data: np.ndarray, context: tuple[float, float] | None = None):
+    def __call__(self, data: np.ndarray, context: tuple[float, float] | None = None):
         if context is None:
             mean = data.mean()
         else:

@@ -1,74 +1,76 @@
+import random
 from pathlib import Path
 
-import numpy
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import torch
-
+from plotly.subplots import make_subplots
+from tsfs.core import TaskConfig
 from tsfs.models.duet import DUET, DUETConfig
 
-from .download import ExchangeDownloader
+from .data import ExchangeDownloader
+from .data.dataset import TradeDataset
 from .parseset import genf, get_dafe, predict, show
-from .scaler import ArcTan, Robust
-
-torch.serialization.add_safe_globals([numpy._core.multiarray.scalar])
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Using", device.upper())
 
-if device == "cuda":
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
 
-batch_size = 512
-val_size = 1024
+def set_seeds(seed: int):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
 
-seq_len = 1024
-pred_len = 128
+
+def init_device(device: str):
+    if device == "cuda":
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+
+user_data = Path("user_data")
+
+set_seeds(2003)
+init_device(device)
+
+runname = "sambucha"
+
+task = TaskConfig(1024, 32)
 
 config = DUETConfig()
-config.seq_len = seq_len
-config.pred_len = pred_len
-config.enc_in = 4
+config.apply(task)
+
 model = DUET(config).to(device)
 
-modelname = model.name
-checkpoint = Path("state") / "DUET1024RobustArcTan.pth"
+params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Params: {params:,}")
+
+
+checkpoint = user_data / "state" / (runname + ".pth")
 if checkpoint.is_file():
     cpdata = torch.load(checkpoint, weights_only=False)
     model.load_state_dict(cpdata["model"])
     print(f"✅ Checkpoint m loaded. Loss {cpdata['loss']:.6f}")
 
-# rmodel = TradeModel(3, 3, 64).to(device)
-# checkpoint_path = Path("state") / "TM_S32.pth"
-# if checkpoint_path.is_file():
-#     cpdata = torch.load(checkpoint_path, map_location=device)
-#     rmodel.load_state_dict(cpdata["model"])
-#     print(f"✅ Checkpoint r loaded. Loss {cpdata['loss']:.6f}")
-
 # df = ExchangeDownloader().download("ETH/USDT:USDT", "15m", 2500)
-df = pd.read_pickle("data/ETH:USDT-15m.pkl")[-8000:]
+df = pd.read_pickle(user_data / "data" / "ETH:USDT-15m.pkl")[-8000:]
+dataset = TradeDataset(df, task.seq_len, task.pred_len)
 
-df["signal"] = np.nan
-
-start = seq_len
-end = len(df)
-
-
-price_scaler = Robust()
-volume_scaler = ArcTan()
-
-index = len(df) - pred_len - int(input("s: "))
-df["pred"] = np.nan
-pred = predict(
-    model, price_scaler, volume_scaler, df, index, seq_len, pred_len, device=device
-)
-df.loc[pred.index, "pred"] = pred["close"]
-
-show(df[index - seq_len : index + pred_len])
-
+get_dafe(model, dataset, 4000, 512)
 exit()
 
-get_dafe(df, scaler_price, volume_price, model, seq_len, pred_len, 4000, batch_size)
+for i in range(100):
+    index = len(dataset) - int(input("s: "))
+    pred, y = predict(model, dataset, index, device=device)
+
+    fig = make_subplots(rows=1, cols=1)
+    fig.add_trace(go.Scatter(y=pred[:, 0], name="pred"), row=1, col=1)
+    fig.add_trace(go.Scatter(y=y[:, 0], name="y"), row=1, col=1)
+    fig.show()
+
 
 exit()
 

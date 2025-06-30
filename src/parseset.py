@@ -7,8 +7,7 @@ from torch import autocast
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from .dataset import TradeDataset
-from .utils import scale_robust, unscale_robust
+from .data.dataset import TradeDataset
 
 
 def show(data, signals: list[dict] = []):
@@ -120,11 +119,8 @@ def show(data, signals: list[dict] = []):
 
 @torch.no_grad()
 def get_dafe(
-    df,
-    scaler,
     model,
-    seq_len,
-    pred_len,
+    dataset: TradeDataset,
     val_size,
     batch_size,
     device="cuda",
@@ -133,13 +129,13 @@ def get_dafe(
     losses = []
 
     loader = DataLoader(
-        TradeDataset(df, scaler, seq_len, pred_len),
+        dataset,
         batch_size,
         num_workers=12,
         pin_memory=True,
         persistent_workers=True,
     )
-    df = df[seq_len:]
+    df = dataset.df[dataset.seq_len :]
 
     batch_bar = tqdm(loader, desc="Dafe Loss", unit="batch")
     for x, y, mark, _ in batch_bar:
@@ -229,57 +225,28 @@ def get_dafe(
 
 def predict(
     model,
-    price_scaler,
-    volume_scaler,
-    df,
-    index,
-    seq_len,
-    pred_len,
+    dataset: TradeDataset,
+    index: int,
     window_size=None,
     device="cuda",
 ):
     if window_size is None:
-        window_size = pred_len
-    elif window_size > pred_len:
+        window_size = dataset.seq_len
+    elif window_size > dataset.pred_len:
         raise IndexError("window")
 
-    s_begin = index - seq_len
-    s_end = index
-    r_end = s_end + pred_len
+    x, y, mark, _ = dataset[index]
 
-    if s_end > len(df):
-        raise IndexError("DataFrame")
-
-    data = df[["close", "high", "low", "volume"]].values
-    feats = TradeDataset._gen_time_features(df.index)
-
-    input_seq = data[s_begin:s_end]
-
-    price, pctx = price_scaler.scale(input_seq[:, 0:3])
-    volume, vctx = volume_scaler.scale(input_seq[:, 3:])
-
-    x = np.concat([price, volume], axis=1)
-    x = torch.FloatTensor(x).unsqueeze(0).to(device)
-
-    mark = feats[s_begin:r_end]
-    mark = torch.FloatTensor(mark).unsqueeze(0).to(device)
+    x = x.to(device, non_blocking=True).unsqueeze(0)
+    y = y.to(device, non_blocking=True).unsqueeze(0)
+    mark = mark.to(device, non_blocking=True).unsqueeze(0)
 
     model.eval()
     with torch.no_grad(), autocast(device):
         outputs, _ = model(x, mark)
         outputs = outputs.cpu().numpy()[0]
 
-    pred_index = df.index[s_end:r_end]
-    price = price_scaler.unscale(outputs[:window_size, 0:3], pctx)
-    volume = volume_scaler.unscale(outputs[:window_size, 3:], vctx)
-
-    result = pd.DataFrame(
-        data=np.hstack([price, volume]),
-        index=pred_index,
-        columns=["close", "high", "low", "volume"],
-    )
-
-    return result
+    return outputs, y.cpu().numpy()[0]
 
 
 def genf(

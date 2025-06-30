@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import ccxt
 import pandas as pd
 

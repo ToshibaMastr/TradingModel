@@ -1,31 +1,30 @@
 from pathlib import Path
-from typing import Optional
+
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, Dataset, ConcatDataset
-
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 from tsfs.core.task import TaskConfig
 
 from ..scaler import ArcTan, Robust
-from .utils import seq_split
 from .download import ExchangeDownloader
+from .utils import seq_split
+
 
 class TradeDataset(Dataset):
-    def __init__(
-        self,
-        df: pd.DataFrame,
-        seq_len: int,
-        pred_len: int,
-    ):
-        self.scaler_volume = ArcTan()
+    def __init__(self, df: pd.DataFrame, seq_len: int, pred_len: int):
+        self.df = df
+
+        self.scaler_volume = ArcTan(0.3)
         self.scaler_price = Robust()
 
         self.seq_len = seq_len
         self.pred_len = pred_len
 
         self.data = df[["close", "high", "low", "volume"]].values
-        self.target = df[["close", "high", "low"]].values
+
+        smdf = df.rolling(window=3, min_periods=1).mean()
+        self.target = smdf[["close", "high", "low"]].values
         self.feats = self._gen_time_features(df.index)
 
     def __len__(self):
@@ -39,11 +38,10 @@ class TradeDataset(Dataset):
         input_seq = self.data[s_begin:s_end]
         target_seq = self.target[s_end:r_end]
 
-        price, pctx = self.scaler_price.scale(input_seq[:, 0:3])
-        volume, vctx = self.scaler_volume.scale(input_seq[:, 3:])
+        price, pctx = self.scaler_price(input_seq[:, 0:3])
+        volume, vctx = self.scaler_volume(input_seq[:, 3:])
 
-        y, _ = self.scaler_price.scale(target_seq, pctx)
-
+        y, _ = self.scaler_price(target_seq, pctx)
         x = np.concat([price, volume], axis=1)
         mark = self.feats[s_begin:r_end]
 
@@ -53,7 +51,7 @@ class TradeDataset(Dataset):
             torch.FloatTensor(x),
             torch.FloatTensor(y),
             torch.FloatTensor(mark),
-            context
+            context,
         )
 
     def inverse(self, pred, context) -> np.ndarray:
@@ -67,15 +65,14 @@ class TradeDataset(Dataset):
         hours = dates.hour.values
         return np.column_stack([months, days, weekdays, hours])
 
+
 class DatasetR:
-    def __init__(self, path: Path, symbols: list[str], timeframe: str = "15m", val_size: int = 4000):
+    def __init__(self, path: Path, symbols: list[str], timeframe: str = "15m"):
         self.path = path
         self.symbols = symbols
         self.timeframe = timeframe
-        self.val_size = val_size
 
-        self.val_loader: Optional[DataLoader] = None
-        self.train_loader: Optional[DataLoader] = None
+        self.active_loaders: list[DataLoader] = []
 
     def download(self, max_length: int = 4_000_000):
         exchange = ExchangeDownloader()
@@ -93,43 +90,43 @@ class DatasetR:
             df.to_pickle(file)
 
     def loaders(
-        self, task: TaskConfig, batch_size: int = 512, device: str = "cuda"
-    ) -> tuple[DataLoader, DataLoader]:
+        self,
+        task: TaskConfig,
+        lengths: list[int],
+        batch_size: int = 512,
+        device: str = "cuda",
+    ) -> list[DataLoader]:
         self.cleanup()
 
-        datasets = []
-        val_datasets = []
+        datasets = [[] for i in range(len(lengths) + 1)]
         for symbol in self.symbols:
-            df = pd.read_pickle(self.path / f"{symbol}:USDT-{self.timeframe}.pkl") # [-10_000:]
+            df = pd.read_pickle(self.path / f"{symbol}:USDT-{self.timeframe}.pkl")
             dataset = TradeDataset(df, task.seq_len, task.pred_len)
-            train, val = seq_split(dataset, [len(dataset) - self.val_size, self.val_size])
-            datasets.append(train)
-            val_datasets.append(val)
 
-        train_loader = DataLoader(
-            ConcatDataset(datasets),
-            batch_size,
-            shuffle=True,
-            num_workers=12,
-            pin_memory=device == "cuda",
-            persistent_workers=True,
-        )
-        val_loader = DataLoader(
-            ConcatDataset(val_datasets),
-            batch_size,
-            num_workers=12,
-            pin_memory=device == "cuda",
-            persistent_workers=True,
-        )
+            splits = seq_split(dataset, [len(dataset) - sum(lengths)] + lengths)
 
-        self.val_loader = val_loader
-        self.train_loader = train_loader
+            for i, slice in enumerate(splits):
+                datasets[i].append(slice)
 
-        return train_loader, val_loader
+        loaders = []
+        for i, dt_list in enumerate(datasets):
+            loader = DataLoader(
+                ConcatDataset(dt_list),
+                batch_size,
+                shuffle=(i == 0),
+                num_workers=12,
+                pin_memory=device == "cuda",
+                persistent_workers=True,
+            )
+            loaders.append(loader)
+
+        self.active_loaders.extend(loaders)
+
+        return loaders
 
     def cleanup(self):
-        for loader in [self.val_loader, self.train_loader]:
-            if loader:
+        for loader in self.active_loaders:
+            if loader and hasattr(loader, "_iterator"):
                 del loader._iterator
 
     def __del__(self):
