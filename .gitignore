@@ -1,16 +1,9 @@
 # Viru
 user_data/
 trashcan/
-state/*
-data/*
 runs/
-atma/
-.why
-atm/
 
 tsfs
-eth-signal.pkl
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

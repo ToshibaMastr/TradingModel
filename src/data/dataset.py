@@ -39,7 +39,7 @@ class TradeDataset(Dataset):
         target_seq = self.target[s_end:r_end]
 
         price, pctx = self.scaler_price(input_seq[:, 0:3])
-        volume, vctx = self.scaler_volume(input_seq[:, 3:])
+        volume, vctx = self.scaler_volume(input_seq[:, 3:4])
 
         y, _ = self.scaler_price(target_seq, pctx)
         x = np.concat([price, volume], axis=1)

@@ -41,6 +41,9 @@ runname = "sambucha"
 task = TaskConfig(1024, 32)
 
 config = DUETConfig()
+config.num_experts = 5
+config.gate_size = 64
+config.k = 5
 config.apply(task)
 
 model = DUET(config).to(device)

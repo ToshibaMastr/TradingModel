@@ -7,6 +7,8 @@ from torch import autocast
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from .scaler.robust import Robust
+
 from .data.dataset import TradeDataset
 
 
@@ -125,6 +127,7 @@ def get_dafe(
     batch_size,
     device="cuda",
 ):
+    rb = Robust()
     model.eval()
     losses = []
 
@@ -138,14 +141,18 @@ def get_dafe(
     df = dataset.df[dataset.seq_len :]
 
     batch_bar = tqdm(loader, desc="Dafe Loss", unit="batch")
-    for x, y, mark, _ in batch_bar:
+    for x, y, mark, context in batch_bar:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         mark = mark.to(device, non_blocking=True)
         with autocast(device):
             outputs, _ = model(x, mark)
             loss = (outputs - y).abs().mean(dim=(-1, -2))
-        losses += loss.tolist()
+        loss = torch.tensor(0.0, device=device)
+        for pred, target, cont in zip(outputs, y, context[:, 0]):
+            pred = rb.unscale(pred, cont)
+            target = rb.unscale(target, cont)
+            losses.append(abs(pred - target).mean().cpu().numpy())
 
     fig = make_subplots(
         rows=3,

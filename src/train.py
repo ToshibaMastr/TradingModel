@@ -12,6 +12,7 @@ from tsfs.core import TaskConfig
 from tsfs.models.duet import DUET, DUETConfig
 
 from .data import DatasetR
+from .scaler.robust import Robust
 
 torch.autograd.set_detect_anomaly(False)
 
@@ -55,28 +56,28 @@ runname = "sambucha"
 
 symbols = [
     "BTC",
-    "ETH",
-    "XRP",
-    "BNB",
-    "SOL",
-    #     "USDC",
-    #     "DOGE",
-    #     "TRX",
-    #     "ADA",
-    #     "SUI",
-    #     "LINK",
-    #     "AVAX",
-    #     "XLM",
-    #     "BCH",
-    #     "TON",
-    #     "HBAR",
-    #     "LTC",
-    #     "DOT",
-    #     "XMR",
+    # "ETH",
+    # "XRP",
+    # "BNB",
+    # "SOL",
+    # "USDC",
+    # "DOGE",
+    # "TRX",
+    # "ADA",
+    # "SUI",
+    # "LINK",
+    # "AVAX",
+    # "XLM",
+    # "BCH",
+    # "TON",
+    # "HBAR",
+    # "LTC",
+    # "DOT",
+    # "XMR",
 ]
 
 dataset = DatasetR(user_data / "data", symbols)
-task = TaskConfig(1024, 32)
+task = TaskConfig(1024, 32, enc_in=5, c_out=3)
 training = TrainingConfig()
 
 config = DUETConfig()
@@ -88,7 +89,7 @@ params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Params: {params:,}")
 
 
-epochs = 20
+epochs = 60
 
 
 criterion = nn.MSELoss()
@@ -99,7 +100,7 @@ scheduler = lr_scheduler.OneCycleLR(
     optimizer,
     max_lr=training.learning_rate,
     epochs=epochs,
-    steps_per_epoch=1921,
+    steps_per_epoch=5875,
     pct_start=0.3,
     anneal_strategy="cos",
 )
@@ -121,6 +122,7 @@ if checkpoint.is_file():
 
 @torch.no_grad()
 def evaluate(model, loader):
+    rb = Robust()
     model.eval()
 
     for x, y, mark, context in loader:
@@ -129,7 +131,19 @@ def evaluate(model, loader):
         mark = mark.to(device, non_blocking=True)
         with autocast(device):
             outputs, _ = model(x, mark)
-        yield abs(y - outputs).mean()
+
+        loss = torch.tensor(0.0, device=device)
+        for pred, target, cont in zip(outputs, y, context[:, 0]):
+            pred = rb.unscale(pred, cont)
+            target = rb.unscale(target, cont)
+            loss += abs(pred - target).mean()
+
+        if not torch.isfinite(loss):
+            print("null loss")
+            # dataset.cleanup()
+            continue  # exit()
+
+        yield loss
 
 
 def train(model, loader):
@@ -148,8 +162,8 @@ def train(model, loader):
 
         if not torch.isfinite(loss):
             print("null loss")
-            dataset.cleanup()
-            exit()
+            # dataset.cleanup()
+            continue  # exit()
 
         scaler.scale(loss).backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), training.gradient_clip)
