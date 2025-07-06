@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tsfs.core import TaskConfig
 from tsfs.models.duet import DUET, DUETConfig
 
-from .data import DatasetR
+from .data import DataManager
 from .trainer import Trainer, TrainingConfig
 from .utils import init_device, set_seeds, user_data_init
 
@@ -50,9 +50,8 @@ symbols = [
     # "XMR",
 ]
 
-dataset = DatasetR(user_data / "data", symbols, "1m")
+dataset = DataManager(user_data / "data", symbols, "1m")
 now = datetime.now()
-dataset.download(100_000)
 task = TaskConfig(1024, 32, enc_in=4, c_out=3)
 train_loader, val_loader = dataset.loaders(task, [20000], device=device)
 
@@ -131,12 +130,10 @@ console = Console()
 for epoch in trainer.epochs():
     train_loss = np.empty([len(train_loader)])
     with Progress(
-        "[bold blue]Training[/] • {task.completed}/{task.total}",
+        "[bold blue]Training[/] {task.completed}/{task.total}",
         BarColumn(bar_width=None),
         "[progress.percentage]{task.percentage:>3.1f}%",
-        "•",
         TimeRemainingColumn(),
-        "•",
         "[yellow]{task.fields[avg_loss]:.4f}[/yellow]",
         transient=True,
     ) as progress:

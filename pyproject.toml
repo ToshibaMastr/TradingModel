@@ -3,8 +3,6 @@ name = "trading-model"
 version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
-    "ccxt>=4.4.78",
-    "httpx>=0.28.1",
     "numpy>=2.2.5",
     "pandas>=2.3.0",
     "plotly>=6.0.1",
@@ -12,6 +10,7 @@ dependencies = [
     "tensorboard>=2.19.0",
     "torch>=2.7.0",
     "tsfs",
+    "klines"
 ]
 
 [dependency-groups]
@@ -21,6 +20,7 @@ lint = ["pyright>=1.1.397", "ruff>=0.11.0"]
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 tsfs = { git = "https://github.com/ToshibaMastr/TimeSeriesForecasting" }
+klines = { git = "https://github.com/ToshibaMastr/binance-klines.git" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

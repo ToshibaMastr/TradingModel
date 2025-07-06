@@ -1,4 +1,4 @@
-from .dataset import DatasetR
-from .download import ExchangeDownloader
+from .dataset import TradeDataset
+from .manager import DataManager
 
-__all__ = ["DatasetR", "ExchangeDownloader"]
+__all__ = ["TradeDataset", "DataManager"]
