@@ -41,8 +41,8 @@ class TradeDataset(Dataset):
         price, pctx = self.scaler_price(input_seq[:, 0:3])
         volume, vctx = self.scaler_volume(input_seq[:, 3:4])
 
-        y, _ = self.scaler_price(target_seq, pctx)
         x = np.concat([price, volume], axis=1)
+        y, _ = self.scaler_price(target_seq, pctx)
         mark = self.feats[s_begin:r_end]
 
         context = np.concat([[pctx]], axis=0)
@@ -78,15 +78,13 @@ class DatasetR:
         exchange = ExchangeDownloader()
 
         for symbol in self.symbols:
-            pair = symbol + "/USDT:USDT"
-
-            pairname = pair.split(":")[0].replace("/", ":")
+            pairname = symbol + ":USDT"
             file = self.path / f"{pairname}-{self.timeframe}.pkl"
 
             if file.exists():
                 continue
 
-            df = exchange.download(pair, self.timeframe, max_length)
+            df = exchange.download(pairname, self.timeframe, max_length)
             df.to_pickle(file)
 
     def loaders(
