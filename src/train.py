@@ -146,12 +146,10 @@ for epoch in trainer.epochs():
 
     evaluate_loss = np.empty([len(val_loader)])
     with Progress(
-        "[bold green]Evaluating[/] • {task.completed}/{task.total}",
+        "[bold green]Evaluating[/] {task.completed}/{task.total}",
         BarColumn(bar_width=None),
         "[progress.percentage]{task.percentage:>3.1f}%",
-        "•",
         TimeRemainingColumn(),
-        "•",
         "[green]{task.fields[avg_loss]:.4f}[/green]",
         transient=True,
     ) as progress:
